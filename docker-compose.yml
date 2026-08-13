@@ -1,0 +1,46 @@
+# secuftpl — python-fastapi
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+    ports: ["${BIND_HOST:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-app}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  redis:
+    image: redis:7.4-alpine
+    ports: ["${BIND_HOST:-127.0.0.1}:${REDIS_PORT:-6379}:6379"]
+
+  # app 서비스는 profiles:[app] 라 기본 `up` 에서 제외 (코드/Dockerfile 미완에도 안전)
+  api:
+    profiles: ["app"]
+    build: { context: ., dockerfile: Dockerfile }
+    env_file: [".env.${ENV:-dev}"]
+    ports: ["${BIND_HOST:-127.0.0.1}:${API_PORT:-8000}:8000"]
+    depends_on: [postgres, redis]
+
+  # E7 독립 frontend — dev/staging/prod 전체 스택(<env>-all/<env>-build)에 포함
+  front:
+    profiles: ["app"]
+    build: { context: ./frontend, dockerfile: Dockerfile }
+    environment:
+      NEXT_PUBLIC_API_BASE: "http://api:8000"   # 컨테이너 내부 프록시 대상 (rewrites)
+      FRONT_PORT: "${FRONT_PORT:-3000}"
+    ports: ["${BIND_HOST:-127.0.0.1}:${FRONT_PORT:-3000}:3000"]
+    depends_on: [api]
+
+  # --- PRD §7.9 서빙 스택 스텁 (SERVING_STACK=ollama 기본; vllm/tgi 전환 시 교체) ---
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   ports: ["${BIND_HOST:-127.0.0.1}:11434:11434"]
+  #   volumes: ["ollama:/root/.ollama"]
+
+volumes:
+  pgdata:
+  # ollama:

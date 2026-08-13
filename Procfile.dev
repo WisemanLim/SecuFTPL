@@ -1,0 +1,8 @@
+# secuftpl — Procfile (local 멀티프로세스 / honcho — PROC_MGR=honcho 대안 경로)
+# 기본 매니저는 pm2(ecosystem.config.cjs). honcho 사용 시: PROC_MGR=honcho make local-all
+# 검증: make ps PROC_MGR=honcho (= honcho check)
+# 포트/IP 는 .env.$(ENV) SSOT (Makefile 이 honcho -e 로 주입) — 하드코딩 금지 (PRD §7.9)
+web: uv run uvicorn app.main:app --reload --host ${BIND_HOST:-127.0.0.1} --port ${API_PORT:-8000}
+front: sh -c 'cd frontend && NEXT_PUBLIC_API_BASE=http://${BIND_HOST:-127.0.0.1}:${API_PORT:-8000} pnpm dev -p ${FRONT_PORT:-3000}'
+# 워커 예시(필요 시 주석 해제 — arq/celery/rq 등):
+# worker: uv run python -m app.worker

@@ -1,0 +1,40 @@
+[project]
+name = "secuftpl"
+version = "0.1.0"
+description = "secuftpl — FastAPI service"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "sqlalchemy>=2.0",
+  "alembic>=1.13",
+  "typer>=0.12",
+  "python-multipart>=0.0.32",
+  "pypdf>=6.15.0",
+  "python-docx>=1.2.0",
+]
+
+[project.scripts]
+secuftpl = "app.cli:app"
+
+[dependency-groups]
+dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.5", "honcho>=2"]
+
+# 모든 테스트는 test/ 로 통일 (tests/ 사용 안 함). 시험표준 dev-env/impl 도 test/ 하위.
+[tool.pytest.ini_options]
+testpaths = ["test"]
+
+[tool.ruff]
+extend-exclude = [".docs"]  # 참고 문서·스크립트 보관소 — lint 대상 아님
+
+[tool.ruff.lint.per-file-ignores]
+"app/cli.py" = ["B008"]  # typer.Option 기본값 호출은 typer 표준 관용구
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

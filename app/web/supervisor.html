@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SecuFTPL Supervisor</title>
+<style>
+  :root { --bg:#f7f8fa; --panel:#fff; --line:#dfe3e8; --ink:#1c2733; --sub:#5b6b7b; --acc:#2563eb; --ok:#15803d; --bad:#b91c1c; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,"Apple SD Gothic Neo",Segoe UI,sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:14px 24px; background:var(--panel); border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; }
+  header h1 { font-size:17px; margin:0; }
+  header small { color:var(--sub); }
+  main { max-width:1100px; margin:0 auto; padding:20px 24px 60px; display:grid; gap:18px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; }
+  section h2 { margin:0 0 4px; font-size:15px; }
+  section h2 .step { color:var(--acc); margin-right:6px; }
+  section p.hint { margin:0 0 10px; color:var(--sub); font-size:12.5px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0; }
+  select, input[type=text] { padding:6px 8px; border:1px solid var(--line); border-radius:6px; font:inherit; min-width:160px; }
+  textarea { width:100%; min-height:110px; padding:8px; border:1px solid var(--line); border-radius:6px; font:12px/1.5 ui-monospace,Menlo,monospace; }
+  button { padding:6px 14px; border:1px solid var(--acc); background:var(--acc); color:#fff; border-radius:6px; font:inherit; cursor:pointer; }
+  button.ghost { background:#fff; color:var(--acc); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:6px; }
+  th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--sub); font-weight:600; }
+  tr.selectable { cursor:pointer; }
+  tr.selected { background:#eef4ff; }
+  pre.out { background:#0f172a; color:#d1e3ff; padding:10px 12px; border-radius:8px; font-size:12px; overflow-x:auto; max-height:260px; white-space:pre-wrap; margin:8px 0 0; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:99px; font-size:11.5px; background:#e8edf3; color:var(--sub); }
+  .pill.ok { background:#dcfce7; color:var(--ok); } .pill.bad { background:#fee2e2; color:var(--bad); }
+  .disabled-note { color:var(--sub); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SecuFTPL Supervisor</h1>
+  <small>파이프라인 시험 UI (PRD F7 · 로그인 없음 — 내부망 전용, BIND_HOST=127.0.0.1)</small>
+</header>
+<main>
+
+<section id="sec-model">
+  <h2><span class="step">①</span>모델 선택</h2>
+  <p class="hint">레지스트리에서 베이스모델을 선택한다. 비어 있으면 카탈로그를 시드한다.</p>
+  <div class="row">
+    <select id="seed-profile"><option value="pilot">pilot (12)</option><option value="core">core</option><option value="all">all</option></select>
+    <button class="ghost" onclick="seedModels()">카탈로그 시드</button>
+    <button class="ghost" onclick="loadModels()">새로고침</button>
+    <span id="model-selected" class="pill">선택 없음</span>
+  </div>
+  <table id="model-table"><thead><tr><th>model_id</th><th>tier</th><th>role</th><th>family</th><th>size(B)</th><th>status</th><th>revision</th></tr></thead><tbody></tbody></table>
+  <div class="row">
+    <input type="text" id="pin-rev" placeholder="revision (커밋 해시)">
+    <button onclick="pinModel()">선택 모델 pin</button>
+    <button class="ghost" onclick="downloadPlan()">다운로드 플랜</button>
+    <button class="ghost" onclick="manifest()">manifest</button>
+  </div>
+  <pre class="out" id="model-out">-</pre>
+</section>
+
+<section id="sec-purpose">
+  <h2><span class="step">②</span>사용용도 (task_type)</h2>
+  <p class="hint">데이터셋 metadata.task_type — 수집 시 레코드에 없으면 이 값이 채워진다.</p>
+  <div class="row">
+    <select id="task-type">
+      <option value="alert_triage">alert_triage — SOC 경보 분류·요약</option>
+      <option value="cti_extraction">cti_extraction — CTI/ATT&amp;CK 구조화</option>
+      <option value="vuln_triage">vuln_triage — 취약점 우선순위화</option>
+      <option value="policy_qa">policy_qa — 보안 정책 질의응답</option>
+      <option value="safety_refusal">safety_refusal — 안전 거부</option>
+    </select>
+  </div>
+</section>
+
+<section id="sec-dataset">
+  <h2><span class="step">③</span>데이터셋 입력 → 검증·수집</h2>
+  <p class="hint">canonical JSONL(줄당 1 레코드) 붙여넣기 → 검증(게이트 리포트) 또는 수집(가명화→중복제거→검수 큐).</p>
+  <textarea id="jsonl" placeholder='{"messages":[{"role":"user","content":"..."},{"role":"assistant","content":"..."}],"metadata":{"record_id":"r-1","source_type":"manual","task_type":"","dataset_version":"v0.1.0"}}'></textarea>
+  <div class="row">
+    <button class="ghost" onclick="validateRecords()">검증만</button>
+    <button onclick="ingestRecords()">수집(ingest)</button>
+    <select id="conv-source"><option>alpaca</option><option>sharegpt</option><option>openai-chat</option><option selected>canonical</option></select>
+    →
+    <select id="conv-target"><option selected>canonical</option><option>alpaca</option><option>sharegpt</option><option>openai-chat</option><option>dpo-pairs</option><option>eval-set</option></select>
+    <button class="ghost" onclick="convertRecords()">포맷 변환</button>
+  </div>
+  <pre class="out" id="dataset-out">-</pre>
+</section>
+
+<section id="sec-queue">
+  <h2><span class="step">④</span>검수 큐 승인/반려</h2>
+  <div class="row">
+    <select id="queue-state"><option>pending</option><option>approved</option><option>rejected</option></select>
+    <button class="ghost" onclick="loadQueue()">조회</button>
+    <input type="text" id="reviewer" placeholder="reviewer (예: soc_01)" value="supervisor">
+  </div>
+  <table id="queue-table"><thead><tr><th>record_id</th><th>task_type</th><th>grade</th><th>lineage</th><th>액션</th></tr></thead><tbody></tbody></table>
+  <pre class="out" id="queue-out">-</pre>
+</section>
+
+<section id="sec-run">
+  <h2><span class="step">⑤</span>파인튜닝 실행 (E3)</h2>
+  <p class="hint">선택 모델 + 승인 데이터셋으로 튜닝 잡 생성. 실학습은 GPU worker — 여기서는 잡·플랜 관리.</p>
+  <div class="row">
+    <input type="text" id="dataset-version" placeholder="dataset_version" value="v0.1.0">
+    <button onclick="createJob()">튜닝 잡 제출</button>
+    <button class="ghost" onclick="listJobs()">잡 목록</button>
+    <input type="text" id="plan-job-id" placeholder="job_id">
+    <button class="ghost" onclick="showPlan()">학습 플랜</button>
+    <button class="ghost" onclick="summary()">선택 요약</button>
+  </div>
+  <pre class="out" id="run-out">-</pre>
+</section>
+
+<section id="sec-batch">
+  <h2><span class="step">⑥</span>리더보드 · 야간 배치 (E6)</h2>
+  <div class="row">
+    <button class="ghost" onclick="loadLeaderboard()">리더보드</button>
+    <button class="ghost" onclick="batchShouldRun()">배치 트리거 판정</button>
+    <button onclick="batchRun()">배치 실행</button>
+    <button class="ghost" onclick="batchRuns()">배치 이력</button>
+  </div>
+  <table id="lb-table"><thead><tr><th>model</th><th>dataset</th><th>baseline</th><th>json_valid</th><th>severity</th><th>attack_f1</th></tr></thead><tbody></tbody></table>
+  <pre class="out" id="batch-out">-</pre>
+</section>
+
+</main>
+<script>
+let selectedModel = null;
+const $ = (id) => document.getElementById(id);
+const show = (id, obj) => { $(id).textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2); };
+async function api(method, path, body) {
+  const res = await fetch(path, { method, headers: {"content-type": "application/json"},
+                                  body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(res.status + " " + JSON.stringify(data));
+  return data;
+}
+function parseJsonl() {
+  return $("jsonl").value.split("\n").filter(l => l.trim()).map(l => JSON.parse(l));
+}
+function fillTaskType(records) {
+  const t = $("task-type").value;
+  for (const r of records) { r.metadata ??= {}; if (!r.metadata.task_type) r.metadata.task_type = t; }
+  return records;
+}
+async function seedModels() {
+  try { show("model-out", await api("POST", "/api/v1/models/seed", {profile: $("seed-profile").value})); await loadModels(); }
+  catch (e) { show("model-out", String(e)); }
+}
+async function loadModels() {
+  try {
+    const data = await api("GET", "/api/v1/models");
+    const tbody = $("model-table").querySelector("tbody");
+    tbody.innerHTML = "";
+    for (const m of data.models) {
+      const tr = document.createElement("tr");
+      tr.className = "selectable" + (selectedModel === m.model_id ? " selected" : "");
+      tr.innerHTML = `<td>${m.model_id}</td><td>${m.tier}</td><td>${m.role}</td><td>${m.family}</td>` +
+        `<td>${m.param_size_b ?? "-"}</td><td><span class="pill">${m.status}</span></td><td>${m.revision ?? "-"}</td>`;
+      tr.onclick = () => { selectedModel = m.model_id; $("model-selected").textContent = m.model_id; loadModels(); };
+      tbody.appendChild(tr);
+    }
+  } catch (e) { show("model-out", String(e)); }
+}
+async function pinModel() {
+  if (!selectedModel) return show("model-out", "모델을 먼저 선택");
+  try { show("model-out", await api("POST", `/api/v1/models/${selectedModel}/pin`, {revision: $("pin-rev").value})); await loadModels(); }
+  catch (e) { show("model-out", String(e)); }
+}
+async function downloadPlan() {
+  if (!selectedModel) return show("model-out", "모델을 먼저 선택");
+  try { show("model-out", await api("GET", `/api/v1/models/${selectedModel}/download-plan`)); }
+  catch (e) { show("model-out", String(e)); }
+}
+async function manifest() { try { show("model-out", await api("GET", "/api/v1/models/manifest")); } catch (e) { show("model-out", String(e)); } }
+async function validateRecords() {
+  try { show("dataset-out", await api("POST", "/api/v1/datasets/validate", {records: fillTaskType(parseJsonl())})); }
+  catch (e) { show("dataset-out", String(e)); }
+}
+async function ingestRecords() {
+  try { show("dataset-out", await api("POST", "/api/v1/records/ingest", {records: fillTaskType(parseJsonl())})); await loadQueue(); }
+  catch (e) { show("dataset-out", String(e)); }
+}
+async function convertRecords() {
+  try { show("dataset-out", await api("POST", "/api/v1/datasets/convert",
+    {items: parseJsonl(), source: $("conv-source").value, target: $("conv-target").value})); }
+  catch (e) { show("dataset-out", String(e)); }
+}
+async function loadQueue() {
+  try {
+    const data = await api("GET", `/api/v1/records/queue?state=${$("queue-state").value}`);
+    const tbody = $("queue-table").querySelector("tbody");
+    tbody.innerHTML = "";
+    for (const item of data.items) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${item.record_id}</td><td>${item.task_type}</td><td>${item.quality_grade}</td><td>${item.lineage_of ?? "-"}</td>` +
+        `<td><button class="ghost" onclick="reviewRecord('${item.record_id}','approve')">승인</button> ` +
+        `<button class="ghost" onclick="reviewRecord('${item.record_id}','reject')">반려</button></td>`;
+      tbody.appendChild(tr);
+    }
+    show("queue-out", {state: data.state, count: data.count});
+  } catch (e) { show("queue-out", String(e)); }
+}
+async function reviewRecord(rid, action) {
+  try { show("queue-out", await api("POST", `/api/v1/records/${rid}/review`, {action, reviewer: $("reviewer").value || "supervisor"})); await loadQueue(); }
+  catch (e) { show("queue-out", String(e)); }
+}
+function summary() {
+  show("run-out", { model: selectedModel ?? "(미선택)", task_type: $("task-type").value,
+                    dataset_version: $("dataset-version").value });
+}
+async function createJob() {
+  if (!selectedModel) return show("run-out", "모델을 먼저 선택");
+  try {
+    const job = await api("POST", "/api/v1/tuning/jobs",
+      {model_id: selectedModel, dataset_version: $("dataset-version").value});
+    $("plan-job-id").value = job.job_id;
+    show("run-out", job);
+  } catch (e) { show("run-out", String(e)); }
+}
+async function listJobs() { try { show("run-out", await api("GET", "/api/v1/tuning/jobs")); } catch (e) { show("run-out", String(e)); } }
+async function showPlan() {
+  const id = $("plan-job-id").value.trim();
+  if (!id) return show("run-out", "job_id 입력");
+  try { show("run-out", (await api("GET", `/api/v1/tuning/jobs/${id}/plan`)).plan); }
+  catch (e) { show("run-out", String(e)); }
+}
+async function loadLeaderboard() {
+  try {
+    const data = await api("GET", "/api/v1/tuning/leaderboard");
+    const tbody = $("lb-table").querySelector("tbody");
+    tbody.innerHTML = "";
+    for (const r of data.items) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${r.model_id}</td><td>${r.dataset_version}</td>` +
+        `<td>${r.baseline ? "✓" : ""}</td><td>${r.json_valid_rate.toFixed(3)}</td>` +
+        `<td>${r.severity_accuracy.toFixed(3)}</td><td><b>${r.attack_f1.toFixed(3)}</b></td>`;
+      tbody.appendChild(tr);
+    }
+    show("batch-out", {count: data.count, sort_by: data.sort_by});
+  } catch (e) { show("batch-out", String(e)); }
+}
+async function batchShouldRun() { try { show("batch-out", await api("GET", "/api/v1/batch/should-run")); } catch (e) { show("batch-out", String(e)); } }
+async function batchRun() { try { show("batch-out", await api("POST", "/api/v1/batch/run", {})); } catch (e) { show("batch-out", String(e)); } }
+async function batchRuns() { try { show("batch-out", await api("GET", "/api/v1/batch/runs")); } catch (e) { show("batch-out", String(e)); } }
+loadModels(); loadQueue();
+</script>
+</body>
+</html>
