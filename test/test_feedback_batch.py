@@ -5,17 +5,28 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core import db as core_db
+from app.core.config import settings
 from app.core.db import Base, get_db
 from app.main import app
 
 
 @pytest.fixture()
-def client():
+def client(monkeypatch, tmp_path):
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
     Base.metadata.create_all(engine)
     TestSession = sessionmaker(bind=engine, autoflush=False)
+    from app.services import trainer
+
+    # 배치가 생성한 잡은 이제 즉시 학습 디스패치됨(F9 admit_or_queue) — 백그라운드 워커도
+    # 테스트용 in-memory DB 를 사용하도록 전역 SessionLocal 교체 필요.
+    monkeypatch.setattr(core_db, "engine", engine)
+    monkeypatch.setattr(core_db, "SessionLocal", TestSession)
+    monkeypatch.setattr(trainer, "ADAPTER_ROOT", tmp_path / "adapters")
+    monkeypatch.setattr(trainer.time, "sleep", lambda s: None)
+    monkeypatch.setattr(settings, "dataset_min_records", 1)  # 최소 500건 게이트는 별도 시험(F9)
 
     def override_db():
         db = TestSession()

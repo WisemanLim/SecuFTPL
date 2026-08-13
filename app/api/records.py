@@ -41,7 +41,7 @@ class ReviewRequest(BaseModel):
 
 
 class AugmentRequest(BaseModel):
-    method: str = Field(default="keyword", pattern="^(keyword|backtranslate)$")
+    method: str = Field(default="keyword", pattern="^(keyword|backtranslate|paraphrase)$")
     substitutions: dict[str, str] | None = None  # keyword 모드 필수 — 전문가 승인 사전 (PRD §7.4)
     record_ids: list[str] | None = None  # 미지정 시 approved 원본 전체
     near_dup_threshold: float = Field(default=1.0, ge=0.5, le=1.0)  # 증강본은 원본과 유사한 게 정상 — 기본 완전중복만 차단
@@ -201,27 +201,31 @@ def augment_suggestions(db: DbSession, top_n: int = 10) -> dict:
 @router.post("/augment")
 def augment(req: AugmentRequest, db: DbSession) -> dict:
     """승인(approved)된 원본만 증강 → 검수 큐 재편입 (PRD §7.4: 증강본도 게이트·검수 통과 필수).
-    method=keyword(치환 사전) | backtranslate(ko→en→ko, Ollama 백엔드)."""
+    method=keyword(치환 사전) | backtranslate(ko→en→ko, Ollama 백엔드) | paraphrase(LLM 문장 재구성, Ollama 백엔드)."""
     from app.services.augment import (
         augment_records,
         back_translate_records,
+        ollama_paraphraser,
         ollama_translator,
+        paraphrase_records,
     )
 
     originals = _augment_originals(db, req.record_ids)
     if not originals:
         raise HTTPException(status_code=422, detail="no approved original records to augment")
     try:
-        if req.method == "backtranslate":
+        if req.method in ("backtranslate", "paraphrase"):
             import os
 
             base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
             try:
-                augmented = back_translate_records(originals, ollama_translator(base))
+                augmented = (back_translate_records(originals, ollama_translator(base))
+                            if req.method == "backtranslate"
+                            else paraphrase_records(originals, ollama_paraphraser(base)))
             except OSError as exc:
                 raise HTTPException(
                     status_code=503,
-                    detail=f"번역 백엔드(Ollama) 미가용: {exc} — OLLAMA_BASE_URL 확인/기동 필요") from exc
+                    detail=f"LLM 백엔드(Ollama) 미가용: {exc} — OLLAMA_BASE_URL 확인/기동 필요") from exc
         else:
             if not req.substitutions:
                 raise HTTPException(status_code=422, detail="keyword 모드는 substitutions 필수")

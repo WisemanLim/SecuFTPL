@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from app.api.batch import router as batch_router
 from app.api.datasets import router as datasets_router
 from app.api.feedback import router as feedback_router
+from app.api.rag import router as rag_router
 from app.api.records import router as records_router
 from app.api.registry import router as registry_router
 from app.api.tuning import router as tuning_router
@@ -28,6 +29,7 @@ app.include_router(registry_router)
 app.include_router(tuning_router)
 app.include_router(feedback_router)
 app.include_router(batch_router)
+app.include_router(rag_router)
 
 
 @app.get("/health")

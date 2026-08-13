@@ -18,6 +18,7 @@ from sqlalchemy import DateTime, String, func, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.core import db as core_db
+from app.core.config import settings
 from app.core.db import Base
 from app.models.records import DatasetRecordRow
 from app.models.tuning import TuningJobRow
@@ -148,6 +149,8 @@ def run_training_job(job_id: str) -> None:
         corpus = _load_corpus(db, job.dataset_version)
         if not corpus:
             raise ValueError("no approved records for training")
+        if job.continual_from_job_id:
+            _emit(db, job_id, f"continual training from adapter: {job.continual_from_job_id} (F10)")
         mode = "real" if _real_available() else "simulate"
         final_loss = (_train_real if mode == "real" else _train_simulate)(db, job, corpus)
 
@@ -157,6 +160,7 @@ def run_training_job(job_id: str) -> None:
             "job_id": job.job_id, "base_model": job.model_id,
             "dataset_version": job.dataset_version, "record_count": len(corpus),
             "final_loss": final_loss, "mode": mode, "qlora": QLORA_DEFAULTS,
+            "continual_from_job_id": job.continual_from_job_id,
         }, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         _emit(db, job_id, f"adapter saved: {adapter_dir} (final_loss={final_loss}, mode={mode})")
 
@@ -185,3 +189,38 @@ def run_training_job(job_id: str) -> None:
         _emit(db, job_id, f"job failed: {exc}")
     finally:
         db.close()
+    dispatch_next_queued()
+
+
+def admit_or_queue(job_id: str) -> None:
+    """리소스 상한(`TOTAL_GPU_CAPACITY`) 내면 즉시 학습 시작, 초과 시 queued 유지
+    (F9 실제 큐잉, PRD §7.12). 자체 DB 세션 사용 — 백그라운드 태스크·배치 양쪽에서 호출."""
+    db = core_db.SessionLocal()
+    try:
+        job = db.scalar(select(TuningJobRow).where(TuningJobRow.job_id == job_id))
+        if not job or job.status != "queued":
+            return
+        running_gpu = sum(j.max_gpu for j in db.scalars(
+            select(TuningJobRow).where(TuningJobRow.status == "running")))
+        if running_gpu + job.max_gpu > settings.total_gpu_capacity:
+            return  # 상한 초과 — queued 유지, 다른 잡 완료 시 dispatch_next_queued 가 재시도
+    finally:
+        db.close()
+    run_training_job(job_id)
+
+
+def dispatch_next_queued() -> None:
+    """잡 완료(성공/실패) 시 호출 — 상한 내에서 가장 오래 대기한 queued 잡을 시작(F9).
+    시작된 잡도 결국 run_training_job 종료 시 이 함수를 다시 호출해 큐를 이어서 비운다."""
+    db = core_db.SessionLocal()
+    try:
+        running_gpu = sum(j.max_gpu for j in db.scalars(
+            select(TuningJobRow).where(TuningJobRow.status == "running")))
+        candidate = db.scalar(select(TuningJobRow).where(TuningJobRow.status == "queued")
+                              .order_by(TuningJobRow.id))
+        if not candidate or running_gpu + candidate.max_gpu > settings.total_gpu_capacity:
+            return
+        job_id = candidate.job_id
+    finally:
+        db.close()
+    admit_or_queue(job_id)

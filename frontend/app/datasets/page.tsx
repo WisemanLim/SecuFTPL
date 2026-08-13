@@ -173,10 +173,12 @@ export default function DatasetsPage() {
             { method: "keyword", substitutions: JSON.parse(subs) }))}>키워드 치환 증강</button>
           <button className="ghost" onClick={run(() => api("POST", "/api/v1/records/augment",
             { method: "backtranslate" }))}>역번역 증강 (ko→en→ko, Ollama)</button>
+          <button className="ghost" onClick={run(() => api("POST", "/api/v1/records/augment",
+            { method: "paraphrase" }))}>패러프레이즈 증강 (LLM 재구성, Ollama)</button>
         </div>
         <p style={{ color: "var(--sub)", fontSize: 12.5, margin: "4px 0 0" }}>
           승인(approved) 원본만 대상. 증강본은 검수 큐 재편입, CVE/ATT&CK/CWE 식별자 불변.
-          역번역은 Ollama 기동 필요(<code>OLLAMA_BASE_URL</code>).
+          역번역·패러프레이즈는 Ollama 기동 필요(<code>OLLAMA_BASE_URL</code>).
         </p>
       </section>
       <pre className="out">{out}</pre>

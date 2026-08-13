@@ -41,16 +41,18 @@ app/
     ├── datasets.py       # /api/v1/datasets — validate·convert·formats
     ├── records.py        # /api/v1/records — ingest·augment·queue·review
     ├── registry.py       # /api/v1/models — seed·pin·manifest·events/scan·download-plan
-    ├── tuning.py         # /api/v1/tuning — jobs·plan·complete·evaluate·leaderboard
+    ├── tuning.py         # /api/v1/tuning — jobs·plan·complete·evaluate·leaderboard·resources(F9)·export-plan(F11)·eval-guide(F12)
     ├── feedback.py       # /api/v1/feedback — agent feedback loop·stats (E5)
-    └── batch.py          # /api/v1/batch — should-run·run·gate·runs (E6)
+    ├── batch.py          # /api/v1/batch — should-run·run·gate·runs·cron-plan (E6)
+    └── rag.py            # /api/v1/rag — synthesize·upload·upgrade (F10)
 frontend/                 # E7 standalone Next.js app (wise-FP as reference only — no login)
-├── app/                  # dashboard·pipeline (step wizard)·models·datasets·queue·tuning·leaderboard
+├── app/                  # dashboard·pipeline (step wizard)·models·datasets·queue·tuning (resources·export F9/F11)·leaderboard (eval guide F12)·rag (corpus synthesis·model upgrade F10)
 ├── components/           # Shell (collapsible left sidebar)·Stepper (stage status cards)
 ├── lib/api.ts            # same-origin /api/* (rewrites proxy → FastAPI)
 └── next.config.mjs       # NEXT_PUBLIC_API_BASE proxy config
 # style: Genians CI green (#86BC25) — mirrors SeCuardian front (PRD §7.11)
 test/                     # pytest + testing standard (dev-env/, impl/<Nth>/)
+scripts/                 # run-pipeline.sh — one-stop pipeline orchestration (F8 extension)
 .docs/                    # PRD, reference docs, model download scripts
 ```
 
@@ -63,6 +65,8 @@ Docker Compose v2 · Helm(K8s) · GitHub Actions (uv sync→ruff→pytest)
 
 - Python 3.12+, [uv](https://docs.astral.sh/uv/), Docker Desktop (Compose v2), GNU Make
 - Node.js (default process manager pm2 runs via `npx` — alternative: `PROC_MGR=honcho`)
+- (optional) `uv sync --extra mlx` — F11 real MLX export (Apple Silicon only, `mlx-lm`)
+- (optional) frontend e2e tests: `cd frontend && pnpm exec playwright install chromium` (Vitest just needs `pnpm install` — already in devDependencies)
 - Check: `make preflight`
 
 ## Environment (.env matrix)
@@ -75,7 +79,9 @@ Docker Compose v2 · Helm(K8s) · GitHub Actions (uv sync→ruff→pytest)
 | `.env.prod` | keys only | Vault/Secret Manager injection |
 
 Operational options (PRD §7.9): `FT_TRIGGER_MODE=schedule` · `HF_EVENT_MODE=polling` (weekly) ·
-`SATISFACTION_SCALE=binary` · `SERVING_STACK=ollama`. Full keys: [.env.example](.env.example).
+`SATISFACTION_SCALE=binary` · `SERVING_STACK=ollama` · `DATASET_MIN_RECORDS=500` (tuning start gate) ·
+`JOB_MAX_GPU=1`/`JOB_MAX_VRAM_GB=24` (default job resource limits, F9) ·
+`TOTAL_GPU_CAPACITY=2` (system-wide concurrent training cap, queues jobs beyond it). Full keys: [.env.example](.env.example).
 **Never commit real secrets** — `.gitignore` blocks `.env.*` (`!.env.example`).
 
 ## Run
@@ -134,22 +140,30 @@ on a conflict, changing `API_PORT` in `.env.local` propagates to compose, Procfi
 | GET | `/api/v1/models/manifest` | pinned-model manifest |
 | POST | `/api/v1/models/events/scan` | inject new-model events → similarity → candidate (ops scheduler calls on `HF_POLLING_CRON`) |
 | GET | `/api/v1/models/{model_id}/download-plan` | generate hf CLI download command (never executed) |
-| POST | `/api/v1/records/augment` | augmentation of approved originals → re-queue — `method: keyword` (dictionary) \| `backtranslate` (ko→en→ko via Ollama; 503 when down) |
-| POST | `/api/v1/tuning/jobs` · GET `/jobs` | create tuning job (→**starts background training**)·list |
+| POST | `/api/v1/records/augment` | augmentation of approved originals → re-queue — `method: keyword` (dictionary) \| `backtranslate` (ko→en→ko) \| `paraphrase` (LLM sentence rewrite) — the latter two need Ollama, 503 when down |
+| POST | `/api/v1/tuning/jobs` · GET `/jobs` | create tuning job (**422 if approved records < 500**; optional `max_gpu`/`max_vram_gb` — **stays queued** instead of starting immediately if it would exceed the system-wide cap `TOTAL_GPU_CAPACITY`)·list |
+| GET | `/api/v1/tuning/jobs/{id}/resources` | **resource monitoring** (F9) — CPU/memory (real) + GPU util/VRAM (pynvml or simulated) |
 | GET | `/api/v1/tuning/jobs/{id}/events` | poll training progress events (loss·steps) = history |
-| GET | `/api/v1/tuning/jobs/{id}/export` | **download succeeded model (adapter) as tar.gz** |
+| WS | `/api/v1/tuning/jobs/{id}/stream` | **live streaming** (F9) — pushes status/progress/new events every 0.3s, sends a final snapshot and closes on succeeded/failed. Alternative to polling `/events` |
+| GET | `/api/v1/tuning/jobs/{id}/export` | **model download** — `format=adapter`(default, tar.gz) \| `full` (merged full model, F11) |
+| GET | `/api/v1/tuning/jobs/{id}/export-plan` | **runtime conversion plan** (F11) — `target=gguf`(Ollama/llama.cpp) \| `mlx` (Apple Silicon); command generation only, never executed |
+| POST | `/api/v1/tuning/jobs/{id}/export/mlx` | **real MLX conversion** (F11) — actually runs the conversion when `mlx-lm` is installed (`uv sync --extra mlx`); 501 if not installed, 422 if the full model isn't real HF weights |
 | POST | `/api/v1/tuning/jobs/{id}/retry` | re-run a queued/failed job (background re-dispatch) |
 | DELETE | `/api/v1/tuning/jobs/{id}` | delete job (cascades event log; running blocked) |
 | GET | `/api/v1/tuning/jobs/{id}/plan` | generate QLoRA training plan (YAML) |
 | POST | `/api/v1/tuning/jobs/{id}/complete` | external worker callback (metrics → leaderboard) |
 | GET | `/api/v1/tuning/leaderboard/detail/{model_id}` | **model detail** — evaluation history (eval_id) + tuning jobs |
 | DELETE | `/api/v1/tuning/leaderboard/{eval_id}` | delete a single evaluation result (job·model kept) |
+| GET | `/api/v1/tuning/eval-guide` | **eval metric guide/recommendation** (F12) — recommended metric set + guide text by `task_type`·`case_count` |
 | GET | `/api/v1/tuning/eval-template` | auto-generate eval rows from approved records' answers (step ⑥ auto-fill) |
 | POST | `/api/v1/tuning/evaluate` | evaluate prediction batch → leaderboard |
 | GET | `/api/v1/tuning/leaderboard` | model comparison (sorted by attack_f1) |
 | POST | `/api/v1/feedback` · GET `/feedback/stats` | agent Q/A + satisfaction feedback loop·stats (E5) |
 | GET | `/api/v1/batch/should-run` · POST `/run` | batch trigger check·run (E6, called by ops cron) |
 | POST | `/api/v1/batch/gate` · GET `/runs` | deployment gate (floors + regression check)·history |
+| GET | `/api/v1/batch/cron-plan` | **ops cron wiring** — generates crontab lines for nightly batch·HF polling (never installed/executed; add via `crontab -e`) |
+| POST | `/api/v1/rag/synthesize` · `/upload` | **RAG corpus → synthesized QA records** (F10) — chunk text/documents (PDF·DOCX·TXT·MD·HTML) → synthesize cause/resolution → queue for review |
+| POST | `/api/v1/rag/upgrade` | **model upgrade** (F10) — submit a continual fine-tuning job on the approved (RAG-augmented) dataset; optional `continual_from_job_id` sets the base adapter |
 
 ```bash
 curl -s localhost:8000/api/v1/datasets/convert -H 'content-type: application/json' -d '{
@@ -158,6 +172,15 @@ curl -s localhost:8000/api/v1/datasets/convert -H 'content-type: application/jso
   "meta_defaults": {"record_id": "r-1", "dataset_version": "v0.1.0"}
 }'
 # → {"count":1,"items":[{"messages":[...],"metadata":{...}}]}
+
+curl -s localhost:8000/api/v1/rag/synthesize -H 'content-type: application/json' -d '{
+  "documents": [{"title": "threat-report-1", "text": "threat report body..."}],
+  "task_type": "cti_extraction", "dataset_version": "v0.2.0"
+}'
+# → {"documents":1,"chunks":N,"ingest":{"queued":N,...}}  — approve, then call /rag/upgrade to train
+
+curl -s localhost:8000/api/v1/tuning/jobs/ft-xxxx/export-plan?target=gguf
+# → {"job_id":"ft-xxxx","target":"gguf","command":"python convert_hf_to_gguf.py ..."}
 ```
 
 ## Supervisor UI · CLI (F7·F8)
@@ -186,10 +209,31 @@ uv run secuftpl batch run                          # nightly batch (ops cron ent
 uv run secuftpl batch gate <model_id> --dataset-version v1   # exit 1 when gate fails
 ```
 
+## One-stop pipeline script (F8 extension)
+
+`scripts/run-pipeline.sh` — runs model selection → dataset collection (gate·pseudonymization·
+dedup) → review approval → (augmentation) → tuning job → eval gate → leaderboard comparison →
+deploy (export) end-to-end over the HTTP API. Auto-starts the backend (same command as `make dev`)
+if it isn't running, and stops it on completion (leaves an already-running server untouched).
+
+```bash
+make pipeline                          # or: ./scripts/run-pipeline.sh
+RECORD_COUNT=1000 MODEL_ID=Qwen/Qwen3-32B ./scripts/run-pipeline.sh   # override options
+AUGMENT_METHOD=backtranslate ./scripts/run-pipeline.sh                # needs Ollama
+```
+
+Key env vars: `MODEL_ID` (default `Qwen/Qwen3-14B`) · `DATASET_VERSION` (default auto-timestamped) ·
+`RECORD_COUNT` (default 500, matches the `DATASET_MIN_RECORDS` gate — below it, the tuning step 422s) ·
+`AUGMENT`/`AUGMENT_METHOD` (default `true`/`keyword`, offline) · `EXPORT_FORMAT` (default `adapter`) ·
+`API_PORT` (default 8000). Each step's response is saved under `artifacts/pipeline-run-<timestamp>/`
+as JSON/tar.gz. Requires: `curl`·`jq`·`uv`·`python3` (synthetic record generation, stdlib only).
+
 ## Test
 
 ```bash
-make test        # uv run pytest (single test/ tree, 17 cases)
+make test           # uv run pytest (single test/ tree, backend 136 cases)
+make front-test      # frontend Vitest unit tests (7 cases)
+make front-test-e2e  # frontend Playwright e2e (2 cases, auto-starts dev server)
 ```
 
 Iteration records: `test/dev-env/` · `test/impl/1st/` (E1 round 1) · `2nd/` (port SSOT) ·
@@ -204,7 +248,13 @@ URL collection semantics·augment suggestions/back-translation) · `17th/` (revi
 lineage cascade·confirm popup) · `18th~19th/` (detail-panel actions next to status pill) ·
 `20th/` (ingest auto-advance) · `21st/` (gate auto-filled metrics) · `22nd~23rd/` (wizard state
 persistence·circular ref) · `24th/` (training worker background QLoRA·leaderboard detail) · `25th/` (job follow-up — retry·delete) · `26th/` (leaderboard-detail job actions·eval-result delete) · `27th/` (tuning monitoring — progress·history·export) · `28th/` (model status·download·detail·
-multi-pipeline) — all PASS (94 backend cases + E2E).
+multi-pipeline) · `29th/` (F9 resource/monitoring detail settings) · `30th/` (F10 RAG continued
+training) · `31st/` (F11 multi-runtime export) · `32nd/` (F12 eval metric guide) ·
+`33rd~34th/` (frontend F9~F12 wiring) · `35th/` (F9 real queuing) · `36th/` (ops cron wiring) ·
+`37th/` (job progress WebSocket streaming) · `38th/` (frontend Vitest/Playwright wiring + F11
+real MLX export) · `39th/` (augmentation — paraphrase) ·
+`40th/` (one-stop pipeline script, manual E2E) —
+all PASS (136 backend cases + 9 frontend cases + E2E).
 
 ## Troubleshooting
 
@@ -231,7 +281,41 @@ multi-pipeline) — all PASS (94 backend cases + E2E).
 
 - ~~E1~E8 all done~~ — dataset core → model registry → tuning·eval leaderboard → augmentation →
   agent feedback → nightly batch → **standalone frontend** (`frontend/`) → Supervisor UI·CLI
-- **Remaining (extension points)**: real-training deps (torch/transformers/peft/trl+GPU) installed in
-  the worker image (core auto-simulates when absent), external queue (arq/celery)·WebSocket streaming
-  for long jobs, live adapter swap (ollama), LLM augmentation backend (translation·paraphrase),
-  ops cron wiring (`FT_TRIGGER_SCHEDULE_CRON`·`HF_POLLING_CRON`), frontend design system (`/ui-design`)
+- ~~F9 resource/monitoring detail settings~~ — tuning-start 500-record gate (`DATASET_MIN_RECORDS`) +
+  per-job GPU/VRAM limits (`max_gpu`/`max_vram_gb`) + live resource monitoring
+  (`GET /jobs/{id}/resources`) done
+- ~~F10 RAG-based continued training / model upgrade~~ — `/api/v1/rag/synthesize`·`/upload`
+  (synthesize QA → review queue) + `/api/v1/rag/upgrade` (continual fine-tuning,
+  `continual_from_job_id`) done
+- ~~F11 multi-runtime deploy + full-model export~~ — `export?format=full` (adapter merge) +
+  `export-plan?target=gguf|mlx` (Ollama/llama.cpp/MLX conversion command plan) done
+- ~~F12 eval metric guide/recommendation~~ — `GET /tuning/eval-guide`
+  (task_type·sample-size based recommendation) done
+- ~~frontend F9·F11·F12 wiring~~ — tuning page (resource inputs·monitoring·adapter/full-model
+  download·GGUF/MLX plan), leaderboard page (eval guide panel) done (impl/33rd)
+- ~~frontend F10 RAG page~~ — new `/rag` page (corpus synthesis via text/file upload + model
+  upgrade submission), sidebar nav entry added (impl/34th). **PRD F9~F12 backend + frontend fully done**
+- ~~real queuing when resource limits are exceeded~~ — `TOTAL_GPU_CAPACITY`-based
+  `admit_or_queue`/`dispatch_next_queued` (start immediately within capacity, stay queued when over
+  → FIFO retry when another job finishes) done (impl/35th). Also fixed a bug where batch
+  (`/batch/run`) created jobs but never dispatched them
+- ~~WebSocket progress streaming~~ — `WS /jobs/{id}/stream` (pushes every 0.3s, tuning page
+  subscribes per running job) done (impl/37th). External queue (arq/celery, needed for
+  multi-process/multi-node scale) not implemented — the current single-process in-memory
+  dispatcher (F9 §7.12) is sufficient for now
+- ~~frontend automated tests (Vitest/Playwright) wiring~~ — `frontend/vitest.config.mts` (7 unit
+  tests) · `playwright.config.ts` (2 e2e tests), `make front-test`·`front-test-e2e` done (impl/38th)
+- ~~F11 real MLX conversion~~ — `mlx-lm` (Apple Silicon, `uv sync --extra mlx`) powers
+  `POST /jobs/{id}/export/mlx` done (impl/38th, verified with a real public test model). GGUF
+  (llama.cpp) is still plan-only (§7.14) — needs cloning/building the repo, out of scope here
+- **Remaining (needs a GPU/Linux environment — see `.docs/GPU-실학습-배포-가이드.md`)**: vLLM
+  serving, real QLoRA training (torch/transformers/peft/trl+bitsandbytes+CUDA — **installing
+  these first requires a `FORCE_TRAINING_MODE` flag** to avoid `_real_available()` silently
+  flipping the whole test suite to real mode, guide §2.2), real GGUF conversion (llama.cpp),
+  vLLM AWQ/GPTQ quantization, live adapter swap (ollama), frontend design system (`/ui-design`)
+- ~~LLM augmentation backend (paraphrase)~~ — `method: paraphrase` (LLM sentence rewrite, Ollama)
+  done (impl/39th). All three augmentation techniques in §7.4 (keyword·back-translation·paraphrase)
+  are now implemented
+- ~~ops cron wiring~~ — `GET /api/v1/batch/cron-plan` (same as CLI `secuftpl batch cron-plan`)
+  generates crontab lines for `FT_TRIGGER_SCHEDULE_CRON`·`HF_POLLING_CRON` done (impl/36th).
+  **Never installs automatically** — ops applies the output via `crontab -e`

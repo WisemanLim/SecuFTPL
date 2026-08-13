@@ -105,5 +105,9 @@ def run_batch(db: Session, mode: str | None = None, triggered_by: str = "batch")
                       dataset_version=snapshot, status="jobs_created", jobs=jobs)
     db.add(run)
     db.commit()
+    from app.services.trainer import admit_or_queue
+
+    for job_id in jobs:  # 리소스 상한 내에서 즉시 시작, 초과 시 큐잉(F9)
+        admit_or_queue(job_id)
     return {"run_id": run_id, "status": run.status, "dataset_version": snapshot,
             "detail": detail, "jobs": jobs}

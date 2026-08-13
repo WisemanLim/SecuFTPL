@@ -1,7 +1,15 @@
 """secuftpl — 튜닝·평가·리더보드 API (PRD E3)."""
+import asyncio
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,6 +33,8 @@ DbSession = Annotated[Session, Depends(get_db)]
 class JobCreate(BaseModel):
     model_id: str
     dataset_version: str
+    max_gpu: int | None = None  # 리소스 세부설정 (F9) — 미지정 시 시스템 기본 프로파일
+    max_vram_gb: int | None = None
 
 
 class JobComplete(BaseModel):
@@ -51,15 +61,27 @@ def _job(db: Session, job_id: str) -> TuningJobRow:
 @router.post("/jobs")
 def post_job(req: JobCreate, db: DbSession, background_tasks: BackgroundTasks) -> dict:
     try:
-        job = create_job(db, req.model_id, req.dataset_version)
+        job = create_job(db, req.model_id, req.dataset_version,
+                         max_gpu=req.max_gpu, max_vram_gb=req.max_vram_gb)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    # 학습 워커 백그라운드 실행 (PRD §7.5 — real/simulate 자동 선택)
-    from app.services.trainer import run_training_job
+    # 학습 워커 백그라운드 실행 (PRD §7.5 — real/simulate 자동 선택, 상한 초과 시 큐잉 F9 §7.12)
+    from app.services.trainer import admit_or_queue
 
-    background_tasks.add_task(run_training_job, job.job_id)
+    background_tasks.add_task(admit_or_queue, job.job_id)
     return {"job_id": job.job_id, "status": job.status, "record_count": job.record_count,
+            "max_gpu": job.max_gpu, "max_vram_gb": job.max_vram_gb,
             "training": "background_started"}
+
+
+@router.get("/jobs/{job_id}/resources")
+def job_resources(job_id: str, db: DbSession) -> dict:
+    """잡 리소스 실시간 모니터링 — GPU util/VRAM/CPU/메모리 (F9, PRD §7.12)."""
+    from app.services.resources import job_resource_snapshot
+
+    job = _job(db, job_id)
+    return {"status": job.status,
+            **job_resource_snapshot(job_id, job.max_gpu, job.max_vram_gb)}
 
 
 @router.get("/jobs/{job_id}/events")
@@ -73,6 +95,45 @@ def job_events(job_id: str, db: DbSession) -> dict:
                       .order_by(JobEventRow.id)).all()
     return {"job_id": job_id, "count": len(rows), "events": [
         {"message": r.message, "at": iso_utc(r.created_at)} for r in rows]}
+
+
+@router.websocket("/jobs/{job_id}/stream")
+async def job_stream(websocket: WebSocket, job_id: str) -> None:
+    """잡 진행 실시간 스트리밍 — 폴링(`/events`) 대안, 상태/진행률/신규 이벤트를 푸시(F9 §7.12).
+    잡이 succeeded/failed 에 도달하면 마지막 스냅샷 전송 후 연결을 닫는다."""
+    from app.core import db as core_db
+    from app.services.trainer import JobEventRow
+
+    await websocket.accept()
+    last_event_id = 0
+    try:
+        while True:
+            db = core_db.SessionLocal()
+            try:
+                job = db.scalar(select(TuningJobRow).where(TuningJobRow.job_id == job_id))
+                if not job:
+                    await websocket.send_json({"error": f"job not found: {job_id}"})
+                    await websocket.close()
+                    return
+                new_events = db.scalars(select(JobEventRow).where(
+                    JobEventRow.job_id == job_id, JobEventRow.id > last_event_id,
+                ).order_by(JobEventRow.id)).all()
+                if new_events:
+                    last_event_id = new_events[-1].id
+                await websocket.send_json({
+                    "job_id": job_id, "status": job.status, "progress_pct": job.progress_pct,
+                    "current_step": job.current_step, "total_steps": job.total_steps,
+                    "new_events": [{"message": e.message, "at": iso_utc(e.created_at)}
+                                   for e in new_events],
+                })
+                if job.status in ("succeeded", "failed"):
+                    await websocket.close()
+                    return
+            finally:
+                db.close()
+            await asyncio.sleep(0.3)
+    except WebSocketDisconnect:
+        return
 
 
 @router.get("/leaderboard/detail/{model_id:path}")
@@ -114,38 +175,101 @@ def list_jobs(db: DbSession, status: str | None = None) -> dict:
          "record_count": j.record_count, "status": j.status, "adapter_uri": j.adapter_uri,
          "progress_pct": j.progress_pct, "current_step": j.current_step,
          "total_steps": j.total_steps, "error": j.error,
+         "max_gpu": j.max_gpu, "max_vram_gb": j.max_vram_gb,
          "triggered_by": j.triggered_by, "created_at": iso_utc(j.created_at)} for j in rows
     ]}
 
 
 @router.get("/jobs/{job_id}/export")
-def export_model(job_id: str, db: DbSession):
-    """succeeded 잡 결과물(어댑터) tar.gz 스트리밍 다운로드 (wise-FP Stage9 package 상당)."""
+def export_model(job_id: str, db: DbSession, format: str = "adapter"):
+    """succeeded 잡 결과물 tar.gz 스트리밍 다운로드 (wise-FP Stage9 package 상당).
+    `format=adapter`(기본, 경량) | `full`(어댑터 merge 풀모델, F11 §7.14). GGUF/MLX 는
+    `GET .../export-plan?target=gguf|mlx` 로 변환 명령만 생성(실행 없음)."""
     import io
     import tarfile
     from pathlib import Path
 
     from fastapi.responses import StreamingResponse
 
+    if format not in ("adapter", "full"):
+        raise HTTPException(status_code=422, detail="format must be 'adapter' or 'full'")
     job = _job(db, job_id)
     if job.status != "succeeded" or not job.adapter_uri:
         raise HTTPException(status_code=409, detail="succeeded 잡만 export 가능")
     adapter_dir = Path(job.adapter_uri)
     if not adapter_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"adapter not found: {adapter_dir}")
+
+    if format == "adapter":
+        target_dir, arcname = adapter_dir, job_id
+    else:
+        from app.services.export_runtime import merge_full_model
+
+        full_dir = adapter_dir / "full"
+        merge_full_model(job_id, job.model_id, adapter_dir, full_dir)
+        target_dir, arcname = full_dir, f"{job_id}-full"
+
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        tar.add(adapter_dir, arcname=job_id)
+        tar.add(target_dir, arcname=arcname)
     buf.seek(0)
     return StreamingResponse(
         buf, media_type="application/gzip",
-        headers={"Content-Disposition": f'attachment; filename="{job_id}.tar.gz"'})
+        headers={"Content-Disposition": f'attachment; filename="{arcname}.tar.gz"'})
+
+
+@router.get("/jobs/{job_id}/export-plan")
+def export_plan(job_id: str, db: DbSession, target: str = "gguf") -> dict:
+    """GGUF(Ollama/llama.cpp)·MLX 변환 명령 플랜 생성 — 실행 없음(F11, PRD §7.14).
+    풀모델이 아직 없으면 먼저 생성(merge)한 뒤 플랜을 반환한다."""
+    from pathlib import Path
+
+    from app.services.export_runtime import conversion_plan, merge_full_model
+
+    job = _job(db, job_id)
+    if job.status != "succeeded" or not job.adapter_uri:
+        raise HTTPException(status_code=409, detail="succeeded 잡만 export-plan 가능")
+    adapter_dir = Path(job.adapter_uri)
+    full_dir = adapter_dir / "full"
+    if not (full_dir / "export_manifest.json").is_file():
+        merge_full_model(job_id, job.model_id, adapter_dir, full_dir)
+    try:
+        command = conversion_plan(job_id, full_dir, target)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"job_id": job_id, "target": target, "full_model_dir": str(full_dir), "command": command}
+
+
+@router.post("/jobs/{job_id}/export/mlx")
+def export_mlx_real(job_id: str, db: DbSession, quantize: bool = True) -> dict:
+    """실 MLX 변환 **실행**(F11, PRD §7.14 — `export-plan`은 명령 텍스트만, 이 엔드포인트는 실행).
+    `mlx-lm` 미설치 시 501(설치 안내), 풀모델이 실 HF 가중치가 아니면(시뮬레이션 매니페스트뿐)
+    422(mlx_lm 변환 실패 원인 그대로 노출) — Apple Silicon 전용, `uv sync --extra mlx`."""
+    from pathlib import Path
+
+    from app.services.export_runtime import convert_to_mlx, merge_full_model
+
+    job = _job(db, job_id)
+    if job.status != "succeeded" or not job.adapter_uri:
+        raise HTTPException(status_code=409, detail="succeeded 잡만 export 가능")
+    adapter_dir = Path(job.adapter_uri)
+    full_dir = adapter_dir / "full"
+    if not (full_dir / "export_manifest.json").is_file():
+        merge_full_model(job_id, job.model_id, adapter_dir, full_dir)
+    mlx_dir = adapter_dir / "mlx"
+    try:
+        result = convert_to_mlx(full_dir, mlx_dir, quantize=quantize)
+    except ValueError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except Exception as exc:  # mlx_lm 변환 실패 원인을 그대로 노출(비HF 형식 등)
+        raise HTTPException(status_code=422, detail=f"mlx conversion failed: {exc}") from exc
+    return {"job_id": job_id, **result}
 
 
 @router.post("/jobs/{job_id}/retry")
 def retry_job(job_id: str, db: DbSession, background_tasks: BackgroundTasks) -> dict:
     """queued/failed 잡 재실행 — 백그라운드 워커에 재투입 (running/succeeded 는 차단)."""
-    from app.services.trainer import run_training_job
+    from app.services.trainer import admit_or_queue
 
     job = _job(db, job_id)
     if job.status not in ("queued", "failed"):
@@ -154,7 +278,7 @@ def retry_job(job_id: str, db: DbSession, background_tasks: BackgroundTasks) -> 
     job.status = "queued"
     job.error = None
     db.commit()
-    background_tasks.add_task(run_training_job, job_id)
+    background_tasks.add_task(admit_or_queue, job_id)
     return {"job_id": job_id, "status": "queued", "retry": "background_started"}
 
 
@@ -186,6 +310,14 @@ def post_complete(job_id: str, req: JobComplete, db: DbSession) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"job_id": job.job_id, "status": job.status, "adapter_uri": job.adapter_uri}
+
+
+@router.get("/eval-guide")
+def eval_guide(task_type: str = "alert_triage", case_count: int | None = None) -> dict:
+    """task_type·표본 규모 기반 추천 평가지표 세트 + 가이드 문구(F12)."""
+    from app.services.eval_guide import recommend_metrics
+
+    return recommend_metrics(task_type, case_count)
 
 
 @router.get("/eval-template")

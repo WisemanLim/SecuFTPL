@@ -9,6 +9,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.records import DatasetRecordRow
 from app.models.registry import ModelRow
 from app.models.tuning import EvalResultRow, TuningJobRow
@@ -32,22 +33,44 @@ QLORA_DEFAULTS = {
 
 
 def create_job(db: Session, model_id: str, dataset_version: str,
-               triggered_by: str = "manual") -> TuningJobRow:
-    """튜닝 잡 생성. 모델은 레지스트리 등록 필수, 데이터셋은 approved 레코드만 집계."""
+               triggered_by: str = "manual",
+               max_gpu: int | None = None, max_vram_gb: int | None = None,
+               continual_from_job_id: str | None = None) -> TuningJobRow:
+    """튜닝 잡 생성. 모델은 레지스트리 등록 필수, 데이터셋은 approved 레코드가 최소 임계값
+    이상이어야 함(F1·F9 튜닝 시작 게이트, PRD §7.5·DATASET_MIN_RECORDS).
+    `continual_from_job_id` 지정 시 해당(succeeded) 잡의 어댑터를 이어학습 기준으로 삼는다
+    (F10 RAG 추가학습·모델 업그레이드, §7.13 — 실 이어학습은 worker 몫, 코어는 참조만 기록)."""
     model = db.scalar(select(ModelRow).where(ModelRow.model_id == model_id))
     if not model:
         raise ValueError(f"model not registered: {model_id}")
     if model.status not in ("downloaded", "pinned"):
         raise ValueError(
             f"model '{model_id}' 상태 '{model.status}' — 학습하려면 먼저 다운로드(downloaded/pinned) 필요")
+    if continual_from_job_id:
+        base_job = db.scalar(select(TuningJobRow).where(
+            TuningJobRow.job_id == continual_from_job_id))
+        if not base_job:
+            raise ValueError(f"continual_from_job_id not found: {continual_from_job_id}")
+        if base_job.status != "succeeded":
+            raise ValueError(
+                f"continual_from_job_id '{continual_from_job_id}' 상태 '{base_job.status}' — "
+                "succeeded 잡의 어댑터만 이어학습 기준으로 사용 가능")
     approved = db.scalars(select(DatasetRecordRow).where(
         DatasetRecordRow.review_state == "approved")).all()
     if not approved:
         raise ValueError("no approved records — 검수 승인된 레코드가 없어 잡을 만들 수 없음")
+    minimum = settings.dataset_min_records
+    if len(approved) < minimum:
+        raise ValueError(
+            f"approved records {len(approved)}건 < 최소 {minimum}건 — "
+            f"승인 레코드를 {minimum}건 이상 확보한 뒤 튜닝 잡을 제출하세요 (DATASET_MIN_RECORDS)")
     job = TuningJobRow(
         job_id=f"ft-{uuid.uuid4().hex[:12]}", model_id=model_id,
         dataset_version=dataset_version, record_count=len(approved),
         triggered_by=triggered_by,
+        max_gpu=max_gpu if max_gpu is not None else settings.job_max_gpu,
+        max_vram_gb=max_vram_gb if max_vram_gb is not None else settings.job_max_vram_gb,
+        continual_from_job_id=continual_from_job_id,
     )
     db.add(job)
     db.commit()

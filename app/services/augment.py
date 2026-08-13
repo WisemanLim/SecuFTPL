@@ -169,3 +169,58 @@ def ollama_translator(base_url: str, model: str = "qwen2.5:7b-instruct") -> Tran
             return _json.loads(res.read())["response"].strip()
 
     return translate
+
+
+# --- 패러프레이즈 증강 (PRD §7.4 — LLM 기반 문장 재구성) ---
+
+Paraphraser = Callable[[str], str]  # (text) -> paraphrased text
+
+
+def paraphrase_record(record: dict, paraphraser: Paraphraser, seq: int = 1) -> dict | None:
+    """LLM 기반 패러프레이즈 증강본. 변화 없으면 None. 식별자 불변 보존(역번역과 동일 규칙)."""
+    new_messages = []
+    changed = False
+    for m in record["messages"]:
+        if m["role"] != "user":  # 정답(assistant)·system 은 라벨/규약 — 변형 금지
+            new_messages.append(m)
+            continue
+        protected, mapping = _protect_identifiers(m["content"])
+        rewritten = paraphraser(protected)
+        for token, ident in mapping.items():
+            rewritten = rewritten.replace(token, ident)
+        changed = changed or rewritten != m["content"]
+        new_messages.append({**m, "content": rewritten})
+    if not changed:
+        return None
+    orig_id = record["metadata"]["record_id"]
+    return {"messages": new_messages,
+            "metadata": {**record["metadata"], "record_id": f"{orig_id}-para-{seq}",
+                         "lineage_of": orig_id, "quality_grade": "augmented"}}
+
+
+def paraphrase_records(records: list[dict], paraphraser: Paraphraser) -> list[dict]:
+    out = []
+    for record in records:
+        aug = paraphrase_record(record, paraphraser)
+        if aug:
+            out.append(aug)
+    return out
+
+
+def ollama_paraphraser(base_url: str, model: str = "qwen2.5:7b-instruct") -> Paraphraser:
+    """Ollama 패러프레이즈 백엔드 (SERVING_STACK=ollama 연동). 미기동 시 OSError."""
+    import json as _json
+    import urllib.request
+
+    def paraphrase(text: str) -> str:
+        prompt = ("Rewrite the following text using different words while preserving its exact "
+                  "meaning. Keep any technical identifiers (like __ID0__ placeholders) unchanged. "
+                  f"Output ONLY the rewritten text, no explanations.\n\n{text}")
+        req = urllib.request.Request(
+            f"{base_url.rstrip('/')}/api/generate",
+            data=_json.dumps({"model": model, "prompt": prompt, "stream": False}).encode(),
+            headers={"content-type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as res:
+            return _json.loads(res.read())["response"].strip()
+
+    return paraphrase

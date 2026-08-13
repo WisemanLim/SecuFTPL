@@ -309,6 +309,14 @@ def batch_gate(model_id: str, dataset_version: str = typer.Option(...)):
     raise typer.Exit(0 if verdict["passed"] else 1)
 
 
+@batch_app.command("cron-plan")
+def batch_cron_plan(base_url: str = "http://127.0.0.1:8000"):
+    """야간 배치·HF polling crontab 라인 생성 (실행/설치 없음 — `crontab -e` 로 직접 반영)."""
+    from app.services.ops_cron import cron_plan
+
+    typer.echo(cron_plan(base_url))
+
+
 @batch_app.command("runs")
 def batch_runs():
     """배치 실행 이력."""

@@ -10,6 +10,7 @@ from app.core.db import Base, get_db
 from app.main import app
 from app.services.augment import (
     back_translate_records,
+    paraphrase_records,
     suggest_substitutions,
 )
 from app.services.collect import (
@@ -121,6 +122,25 @@ def test_back_translate_preserves_identifiers_and_lineage():
     assert aug["messages"][1]["content"] == "분석 결과"  # assistant 불변
 
 
+def test_paraphrase_preserves_identifiers_and_lineage():
+    fake = lambda text: f"[재구성] {text}"
+    records = [_rec("r-pp", "CVE-2024-0001 및 T1059.001 관련 아파치 경보")]
+    out = paraphrase_records(records, fake)
+    assert len(out) == 1
+    aug = out[0]
+    assert aug["metadata"]["record_id"] == "r-pp-para-1" and aug["metadata"]["lineage_of"] == "r-pp"
+    assert aug["metadata"]["quality_grade"] == "augmented"
+    user = aug["messages"][0]["content"]
+    assert "CVE-2024-0001" in user and "T1059.001" in user  # 식별자 복원
+    assert aug["messages"][1]["content"] == "분석 결과"  # assistant 불변
+
+
+def test_paraphrase_no_change_returns_empty_list():
+    identity = lambda text: text
+    records = [_rec("r-pp2", "변화 없는 문장")]
+    assert paraphrase_records(records, identity) == []
+
+
 # --- API ---
 
 def _ingest_and_approve(client, rid, user):
@@ -139,6 +159,13 @@ def test_augment_backtranslate_unavailable_returns_503(client, monkeypatch):
     _ingest_and_approve(client, "r-b1", "아파치 경보")
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:1")  # 미기동 포트
     res = client.post("/api/v1/records/augment", json={"method": "backtranslate"})
+    assert res.status_code == 503 and "Ollama" in res.json()["detail"]
+
+
+def test_augment_paraphrase_unavailable_returns_503(client, monkeypatch):
+    _ingest_and_approve(client, "r-pp3", "아파치 경보")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:1")  # 미기동 포트
+    res = client.post("/api/v1/records/augment", json={"method": "paraphrase"})
     assert res.status_code == 503 and "Ollama" in res.json()["detail"]
 
 

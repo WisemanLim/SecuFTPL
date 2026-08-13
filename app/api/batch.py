@@ -46,6 +46,14 @@ def post_gate(req: GateRequest, db: DbSession) -> dict:
     return evaluation_gate(db, req.model_id, req.dataset_version)
 
 
+@router.get("/cron-plan")
+def get_cron_plan(base_url: str = "http://127.0.0.1:8000") -> dict:
+    """야간 배치·HF polling crontab 라인 생성 — 실행/설치 없음(ops 가 `crontab -e` 로 직접 반영)."""
+    from app.services.ops_cron import cron_plan
+
+    return {"base_url": base_url, "command": cron_plan(base_url)}
+
+
 @router.get("/runs")
 def list_runs(db: DbSession) -> dict:
     rows = db.scalars(select(BatchRunRow).order_by(BatchRunRow.id.desc())).all()

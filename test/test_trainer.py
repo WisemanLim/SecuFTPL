@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core import db as core_db
+from app.core.config import settings
 from app.core.db import Base, get_db
 from app.main import app
 
@@ -25,6 +26,7 @@ def client(monkeypatch, tmp_path):
 
     monkeypatch.setattr(trainer, "ADAPTER_ROOT", tmp_path / "adapters")
     monkeypatch.setattr(trainer.time, "sleep", lambda s: None)  # 시뮬레이션 지연 제거
+    monkeypatch.setattr(settings, "dataset_min_records", 1)  # 최소 500건 게이트는 별도 시험(F9)
 
     def override_db():
         db = TestSession()

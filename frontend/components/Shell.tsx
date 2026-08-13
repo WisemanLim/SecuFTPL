@@ -13,6 +13,7 @@ const NAV = [
   { href: "/queue", ico: "✓", label: "검수 큐" },
   { href: "/tuning", ico: "⚙", label: "튜닝" },
   { href: "/leaderboard", ico: "▲", label: "리더보드" },
+  { href: "/rag", ico: "⇪", label: "RAG 업그레이드" },
 ] as const;
 
 export default function Shell({ children }: { children: React.ReactNode }) {

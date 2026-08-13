@@ -5,6 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.config import settings
 from app.core.db import Base, get_db
 from app.main import app
 from app.services.catalog import infer_family, infer_param_size_b, load_catalog
@@ -21,6 +22,7 @@ def client(monkeypatch):
     from app.core import db as core_db
     monkeypatch.setattr(core_db, "engine", engine)
     monkeypatch.setattr(core_db, "SessionLocal", TestSession)
+    monkeypatch.setattr(settings, "dataset_min_records", 1)  # 최소 500건 게이트는 별도 시험(F9)
 
     def override_db():
         db = TestSession()

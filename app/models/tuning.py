@@ -25,6 +25,9 @@ class TuningJobRow(Base):
     adapter_uri: Mapped[str | None] = mapped_column(String(512), default=None)
     error: Mapped[str | None] = mapped_column(String(512), default=None)
     triggered_by: Mapped[str] = mapped_column(String(16), default="manual")  # manual | batch
+    max_gpu: Mapped[int] = mapped_column(default=1)  # 리소스 세부설정 (F9, PRD §7.12)
+    max_vram_gb: Mapped[int] = mapped_column(default=24)
+    continual_from_job_id: Mapped[str | None] = mapped_column(String(64), default=None)  # F10, §7.13
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

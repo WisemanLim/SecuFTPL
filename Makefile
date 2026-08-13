@@ -1,5 +1,5 @@
 # secuftpl — python-fastapi (정적 템플릿 / static scaffold template)
-.PHONY: dev test build deploy up down dc-logs dc-ps ps preflight \
+.PHONY: dev test build deploy pipeline up down dc-logs dc-ps ps preflight \
         local-all local-logs local-stop local-restart \
         dev-all dev-build dev-logs dev-stop dev-restart \
         staging-all staging-build staging-logs staging-stop staging-restart \
@@ -53,6 +53,8 @@ test:   ; uv run pytest
 build:  ## app 이미지 빌드
 	$(DC) --profile app build
 deploy: ; helm upgrade --install secuftpl ./deploy/helm
+pipeline:  ## 원스톱 파이프라인(모델선택→수집→검수→증강→튜닝→게이트→리더보드→배포), 백엔드 자동 기동/정리
+	./scripts/run-pipeline.sh
 
 ps:  ## 프로세스 매니저 상태 (pm2 status / honcho check)
 ifeq ($(PROC_MGR),pm2)
@@ -140,6 +142,10 @@ front-dev:      ## [front] Next.js dev 서버 (FRONT_PORT 기본 3000 — API �
 	cd frontend && pnpm dev
 front-build:    ## [front] 프로덕션 빌드 (타입 체크 포함)
 	cd frontend && pnpm build
+front-test:     ## [front] Vitest 단위 시험
+	cd frontend && pnpm run test
+front-test-e2e: ## [front] Playwright e2e 시험 (dev 서버 자동 기동)
+	cd frontend && pnpm run test:e2e
 
 ## --- 하위호환 별칭 / backward-compat aliases (recipe 없이 선행 타겟만 실행) ---
 local-down:      local-stop      ## [local] local-stop 별칭 (하위호환)

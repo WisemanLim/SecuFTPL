@@ -14,11 +14,26 @@ type Detail = {
           adapter_uri: string | null; triggered_by: string; at: string }[];
 };
 
+type EvalGuide = { task_type: string; recommended_metrics: string[]; guide: Record<string, string>;
+                   case_count: number | null; reliability_note: string | null };
+const TASK_TYPES = ["alert_triage", "cti_extraction", "vuln_triage", "policy_qa", "safety_refusal"];
+
 export default function LeaderboardPage() {
   const [items, setItems] = useState<Row[]>([]);
   const [sortBy, setSortBy] = useState("attack_f1");
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState("");
+
+  // F12: 평가지표 가이드·추천
+  const [guideTaskType, setGuideTaskType] = useState("alert_triage");
+  const [guideCaseCount, setGuideCaseCount] = useState<number | "">("");
+  const [guide, setGuide] = useState<EvalGuide | null>(null);
+  const loadGuide = async () => {
+    try {
+      const q = guideCaseCount === "" ? "" : `&case_count=${guideCaseCount}`;
+      setGuide(await api<EvalGuide>("GET", `/api/v1/tuning/eval-guide?task_type=${guideTaskType}${q}`));
+    } catch (e) { setError(String(e)); }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -58,6 +73,32 @@ export default function LeaderboardPage() {
 
   return (
     <>
+      <section className="panel">
+        <h2>평가지표 가이드·추천 <span className="pill">F12</span></h2>
+        <div className="row">
+          <select value={guideTaskType} onChange={(e) => setGuideTaskType(e.target.value)} aria-label="guide task type">
+            {TASK_TYPES.map((t) => <option key={t}>{t}</option>)}
+          </select>
+          <input type="number" min={0} placeholder="표본 건수(선택)" style={{ width: 130 }}
+                 value={guideCaseCount}
+                 onChange={(e) => setGuideCaseCount(e.target.value === "" ? "" : Number(e.target.value))}
+                 aria-label="case count" />
+          <button className="ghost" onClick={loadGuide}>추천 지표 조회</button>
+        </div>
+        {guide && (
+          <div style={{ marginTop: 8 }}>
+            <p style={{ margin: "0 0 4px" }}>
+              <b>{guide.task_type}</b> 추천 지표: {guide.recommended_metrics.map((m) => <span key={m} className="pill" style={{ marginRight: 4 }}>{m}</span>)}
+            </p>
+            <ul style={{ margin: "4px 0", paddingLeft: 18, fontSize: 12.5, color: "var(--sub)" }}>
+              {Object.entries(guide.guide).map(([m, text]) => <li key={m}><b>{m}</b>: {text}</li>)}
+            </ul>
+            {guide.reliability_note && (
+              <p style={{ fontSize: 12.5, color: "var(--sub)" }}>표본 신뢰도: {guide.reliability_note}</p>
+            )}
+          </div>
+        )}
+      </section>
       <section className="panel">
         <h2>모델 평가 리더보드 <span className="pill">행 클릭 = 세부내용</span></h2>
         <div className="row">
