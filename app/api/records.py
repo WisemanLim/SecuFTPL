@@ -22,9 +22,9 @@ def iso_utc(dt: datetime | None) -> str | None:
     if dt is None:
         return None
     return (dt if dt.tzinfo else dt.replace(tzinfo=UTC)).isoformat()
-from app.models.records import DatasetRecordRow, PseudonymRow
+from app.models.records import DatasetRecordRow, PipelineRunRow, PseudonymRow
 from app.services.dedup import content_hash, find_near_duplicates
-from app.services.gate import validate_record
+from app.services.gate import attribution_errors, validate_record
 from app.services.sanitize import sanitize_record
 
 router = APIRouter(prefix="/api/v1/records", tags=["records"])
@@ -57,13 +57,41 @@ def _persist_mapping(db: Session, before: set[str], mapping: dict[str, str]) -> 
         db.add(PseudonymRow(key=key, kind=kind, token=mapping[key]))
 
 
-@router.post("/ingest")
-def ingest(req: IngestRequest, db: DbSession) -> dict:
+def _record_run(db: Session, channel: str, records: list[dict], results: list[dict],
+                pseudonyms_added: int) -> str:
+    """수집·정제 run 기록 (PRD F15 §7.15) — 단계별 통계 + 출처(F14) 집계, append-only."""
+    import uuid
+
+    stats: dict = {"total": len(records), "pseudonyms_added": pseudonyms_added}
+    reason_samples: list[dict] = []
+    for r in results:
+        stats[r["status"]] = stats.get(r["status"], 0) + 1
+        if "rejected" in r["status"] and len(reason_samples) < 10:
+            reason_samples.append({"index": r["index"], "errors": r.get("errors", [])})
+    stats["reason_samples"] = reason_samples
+    sources: dict[str, dict] = {}
+    for raw in records:
+        meta = raw.get("metadata") or {}
+        uri = meta.get("source_uri") or "(missing)"
+        entry = sources.setdefault(uri, {"count": 0, "license": meta.get("license")})
+        entry["count"] += 1
+    run_id = f"run-{uuid.uuid4().hex[:12]}"
+    db.add(PipelineRunRow(run_id=run_id, channel=channel, stats=stats, sources=sources))
+    return run_id
+
+
+def ingest_records(req: IngestRequest, db: Session, channel: str = "api_ingest") -> dict:
+    """수집 코어 — 전 채널 공용 (게이트 ③④⑤⑥⑦ + run 추적). PRD §7.3."""
     mapping = _load_mapping(db)
     known_keys = set(mapping)
     near_dup_idx = {j for _, j, _ in find_near_duplicates(req.records, req.near_dup_threshold)}
     results = []
     for idx, raw in enumerate(req.records):
+        # 게이트 ③ 출처 확인 (F14): source_uri/source_hash/license 누락 레코드 반입 거부
+        attr_errors = attribution_errors(raw)
+        if attr_errors:
+            results.append({"index": idx, "status": "rejected_attribution", "errors": attr_errors})
+            continue
         errors = validate_record(raw)
         # 가명화 전 원문 기준 게이트: 스키마 오류만 차단, 비밀값/자산 탐지는 가명화로 해소
         schema_errors = [e for e in errors if "detected" not in e]
@@ -74,6 +102,9 @@ def ingest(req: IngestRequest, db: DbSession) -> dict:
             results.append({"index": idx, "status": "skipped_near_duplicate"})
             continue
         clean = sanitize_record(raw, mapping)
+        # F14: license·ingested_at 를 저장 payload 에 명기(스키마 기본값 의존 금지 — manifest 출처 집계용)
+        clean["metadata"].setdefault("license", "internal-restricted")
+        clean["metadata"].setdefault("ingested_at", datetime.now(UTC).isoformat())
         chash = content_hash(clean)
         rid = clean["metadata"]["record_id"]
         dup = db.scalar(select(DatasetRecordRow).where(
@@ -91,10 +122,17 @@ def ingest(req: IngestRequest, db: DbSession) -> dict:
         ))
         results.append({"index": idx, "status": "queued", "record_id": rid, "content_hash": chash})
     _persist_mapping(db, known_keys, mapping)
+    pseudonyms_added = len(mapping) - len(known_keys)
+    run_id = _record_run(db, channel, req.records, results, pseudonyms_added)
     db.commit()
     queued = sum(1 for r in results if r["status"] == "queued")
     return {"total": len(req.records), "queued": queued, "results": results,
-            "pseudonyms_added": len(mapping) - len(known_keys)}
+            "pseudonyms_added": pseudonyms_added, "run_id": run_id}
+
+
+@router.post("/ingest")
+def ingest(req: IngestRequest, db: DbSession) -> dict:
+    return ingest_records(req, db, channel="api_ingest")
 
 
 class CollectDirRequest(BaseModel):
@@ -141,7 +179,7 @@ async def upload(
             reports.append({"file": f.filename, "records": 0, "status": f"error: {exc}"})
     if not records:
         raise HTTPException(status_code=422, detail={"message": "no parsable records", "files": reports})
-    result = ingest(IngestRequest(records=records), db)
+    result = ingest_records(IngestRequest(records=records), db, channel="file_upload")
     return {"files": reports, "ingest": result}
 
 
@@ -158,7 +196,7 @@ def collect_dir_endpoint(req: CollectDirRequest, db: DbSession) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not records:
         raise HTTPException(status_code=422, detail={"message": "no parsable records", "files": reports})
-    return {"files": reports, "ingest": ingest(IngestRequest(records=records), db)}
+    return {"files": reports, "ingest": ingest_records(IngestRequest(records=records), db, channel="dir_collect")}
 
 
 @router.post("/collect/url")
@@ -175,7 +213,7 @@ def collect_url_endpoint(req: CollectUrlRequest, db: DbSession) -> dict:
         raise HTTPException(status_code=502, detail=f"fetch failed: {exc}") from exc
     if not records:
         raise HTTPException(status_code=422, detail="no parsable records")
-    return {"url": req.url, "ingest": ingest(IngestRequest(records=records), db)}
+    return {"url": req.url, "ingest": ingest_records(IngestRequest(records=records), db, channel="web_collect")}
 
 
 def _augment_originals(db: Session, record_ids: list[str] | None) -> list[dict]:
@@ -234,21 +272,98 @@ def augment(req: AugmentRequest, db: DbSession) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not augmented:
         return {"method": req.method, "originals": len(originals), "augmented": 0, "ingest": None}
-    ingest_result = ingest(IngestRequest(records=augmented,
-                                         near_dup_threshold=req.near_dup_threshold), db)
+    ingest_result = ingest_records(IngestRequest(records=augmented,
+                                                near_dup_threshold=req.near_dup_threshold), db,
+                                   channel="augment")
     return {"method": req.method, "originals": len(originals),
             "augmented": len(augmented), "ingest": ingest_result}
 
 
-@router.get("/queue")
-def queue(db: DbSession, state: str = "pending") -> dict:
+@router.get("/queue/groups")
+def queue_groups(db: DbSession, state: str = "pending") -> dict:
+    """검수 큐 그룹 목록 — dataset_version 단위 요약 (PRD §7.15 검수 큐 그룹핑 UX ①단계).
+    그룹당 건수·grade/task_type 분포·출처 집계·수집 시각 범위를 반환한다."""
     rows = db.scalars(
         select(DatasetRecordRow).where(DatasetRecordRow.review_state == state)
         .order_by(DatasetRecordRow.id)
     ).all()
+    groups: dict[str, dict] = {}
+    for r in rows:
+        meta = r.payload.get("metadata") or {}
+        key = meta.get("dataset_version") or "(unversioned)"
+        g = groups.setdefault(key, {
+            "dataset_version": key, "count": 0, "grades": {}, "task_types": {},
+            "sources": {}, "first_created_at": None, "last_created_at": None,
+        })
+        g["count"] += 1
+        g["grades"][r.quality_grade] = g["grades"].get(r.quality_grade, 0) + 1
+        tt = meta.get("task_type") or "(none)"
+        g["task_types"][tt] = g["task_types"].get(tt, 0) + 1
+        uri = meta.get("source_uri") or "(missing)"
+        g["sources"][uri] = g["sources"].get(uri, 0) + 1
+        created = iso_utc(r.created_at)
+        if g["first_created_at"] is None or (created or "") < g["first_created_at"]:
+            g["first_created_at"] = created
+        if g["last_created_at"] is None or (created or "") > g["last_created_at"]:
+            g["last_created_at"] = created
+    items = sorted(groups.values(), key=lambda g: g["last_created_at"] or "", reverse=True)
+    return {"state": state, "group_count": len(items), "total": len(rows), "groups": items}
+
+
+class GroupReviewRequest(BaseModel):
+    dataset_version: str = Field(min_length=1)
+    action: str = Field(pattern="^(approve|reject)$")
+    reviewer: str = Field(min_length=1)
+
+
+@router.post("/queue/review-group")
+def review_group(req: GroupReviewRequest, db: DbSession) -> dict:
+    """그룹(dataset_version) 단위 일괄 승인/반려 (PRD §7.15) — pending 전건 처리.
+    반려 시 증강본 연쇄 폐기(개별 검수와 동일 규칙). 개별 검수(/{record_id}/review)는 그대로 유지."""
+    rows = [r for r in db.scalars(
+        select(DatasetRecordRow).where(DatasetRecordRow.review_state == "pending")
+        .order_by(DatasetRecordRow.id))
+        if (r.payload.get("metadata") or {}).get("dataset_version") == req.dataset_version]
+    if not rows:
+        raise HTTPException(status_code=404,
+                            detail=f"no pending records in group: {req.dataset_version}")
+    new_state = "approved" if req.action == "approve" else "rejected"
+    reviewed: list[str] = []
+    cascaded: list[str] = []
+    for row in rows:
+        row.review_state = new_state
+        row.reviewer = req.reviewer
+        reviewed.append(row.record_id)
+    if new_state == "rejected":
+        # PRD §7.4: 원본 반려 시 증강본 연쇄 폐기 (그룹 밖 lineage 포함)
+        for parent_id in reviewed:
+            for child in db.scalars(select(DatasetRecordRow).where(
+                DatasetRecordRow.lineage_of == parent_id,
+                DatasetRecordRow.review_state != "rejected",
+            )):
+                child.review_state = "rejected"
+                child.reviewer = req.reviewer
+                cascaded.append(child.record_id)
+    db.commit()
+    return {"dataset_version": req.dataset_version, "review_state": new_state,
+            "reviewer": req.reviewer, "reviewed_count": len(reviewed),
+            "reviewed": reviewed, "cascaded_rejects": cascaded}
+
+
+@router.get("/queue")
+def queue(db: DbSession, state: str = "pending", dataset_version: str | None = None) -> dict:
+    rows = db.scalars(
+        select(DatasetRecordRow).where(DatasetRecordRow.review_state == state)
+        .order_by(DatasetRecordRow.id)
+    ).all()
+    if dataset_version:  # 그룹핑 UX ②단계 — 그룹 선택 시 세부 목록 필터
+        rows = [r for r in rows
+                if (r.payload.get("metadata") or {}).get("dataset_version") == dataset_version]
     return {"state": state, "count": len(rows), "items": [
         {"record_id": r.record_id, "task_type": r.payload["metadata"].get("task_type"),
          "quality_grade": r.quality_grade, "lineage_of": r.lineage_of,
+         "source_uri": r.payload["metadata"].get("source_uri"),  # F14 출처 상시 표시
+         "license": r.payload["metadata"].get("license"),
          "created_at": iso_utc(r.created_at)} for r in rows
     ]}
 

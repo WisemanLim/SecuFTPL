@@ -18,7 +18,7 @@ from fastapi import (
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.records import IngestRequest, ingest
+from app.api.records import IngestRequest, ingest_records
 from app.core.db import get_db
 from app.services.tuning import create_job
 
@@ -50,7 +50,7 @@ def synthesize(req: SynthesizeRequest, db: DbSession) -> dict:
         records.extend(synthesize_records(chunks, req.task_type, req.dataset_version, doc.title))
     if not records:
         raise HTTPException(status_code=422, detail="no synthesizable text in documents")
-    result = ingest(IngestRequest(records=records), db)
+    result = ingest_records(IngestRequest(records=records), db, channel="rag_synthesis")
     return {"documents": len(req.documents), "chunks": len(records), "ingest": result}
 
 
@@ -77,7 +77,7 @@ async def synthesize_upload(
             reports.append({"file": f.filename, "chunks": 0, "status": f"error: {exc}"})
     if not records:
         raise HTTPException(status_code=422, detail={"message": "no synthesizable text", "files": reports})
-    return {"files": reports, "ingest": ingest(IngestRequest(records=records), db)}
+    return {"files": reports, "ingest": ingest_records(IngestRequest(records=records), db, channel="rag_synthesis")}
 
 
 class UpgradeRequest(BaseModel):

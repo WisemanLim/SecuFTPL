@@ -50,7 +50,7 @@ def _prepare(client):
             {"role": "assistant",
              "content": '{"severity":"high","attack_mapping":[{"technique_id":"T1059.001"}]}'},
         ],
-        "metadata": {"record_id": "r-tr1", "source_type": "manual",
+        "metadata": {"record_id": "r-tr1", "source_uri": "test://fixture", "source_hash_sha256": "f" * 64, "source_type": "manual",
                      "task_type": "alert_triage", "dataset_version": "v0.1.0"}}]})
     client.post("/api/v1/records/r-tr1/review", json={"action": "approve", "reviewer": "t"})
 

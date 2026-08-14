@@ -44,7 +44,7 @@ def _approve_one(client, rid="r-t1"):
     client.post("/api/v1/records/ingest", json={"records": [{
         "messages": [{"role": "user", "content": f"경보 {rid}"},
                      {"role": "assistant", "content": f"분석 {rid}"}],
-        "metadata": {"record_id": rid, "source_type": "manual",
+        "metadata": {"record_id": rid, "source_uri": "test://fixture", "source_hash_sha256": "f" * 64, "source_type": "manual",
                      "task_type": "alert_triage", "dataset_version": "v0.1.0"},
     }]})
     client.post(f"/api/v1/records/{rid}/review", json={"action": "approve", "reviewer": "t"})
@@ -110,7 +110,7 @@ def test_eval_template_from_approved_records(client):
             {"role": "assistant", "content":
              '{"severity":"high","attack_mapping":[{"technique_id":"T1059.001"}]}'},
         ],
-        "metadata": {"record_id": "r-et1", "source_type": "manual",
+        "metadata": {"record_id": "r-et1", "source_uri": "test://fixture", "source_hash_sha256": "f" * 64, "source_type": "manual",
                      "task_type": "alert_triage", "dataset_version": "v0.1.0"}}]})
     client.post("/api/v1/records/r-et1/review", json={"action": "approve", "reviewer": "t"})
     # 비 JSON 정답 레코드 → skipped

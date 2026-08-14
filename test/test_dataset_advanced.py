@@ -96,7 +96,7 @@ def test_collect_url_html_becomes_document():
 def _rec(rid, user):
     return {"messages": [{"role": "user", "content": user},
                          {"role": "assistant", "content": "분석 결과"}],
-            "metadata": {"record_id": rid, "source_type": "manual",
+            "metadata": {"record_id": rid, "source_uri": "test://fixture", "source_hash_sha256": "f" * 64, "source_type": "manual",
                          "task_type": "alert_triage", "dataset_version": "v0.1.0"}}
 
 

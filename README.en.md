@@ -123,12 +123,17 @@ on a conflict, changing `API_PORT` in `.env.local` propagates to compose, Procfi
 | GET | `/api/v1/datasets/formats` | supported formats (canonical=sft-messages) |
 | POST | `/api/v1/datasets/validate` | batch-validate canonical records (gate report) |
 | POST | `/api/v1/datasets/convert` | format conversion (alpaca/sharegpt/openai-chat ↔ canonical; export: dpo-pairs·eval-set) |
-| POST | `/api/v1/records/ingest` | ingest: gate → pseudonymize → dedup → queue as pending |
+| GET | `/api/v1/datasets/export` | **dataset download** (F13) — filters `format`/`review_state` (default approved)/`dataset_version`, streams JSONL. `with_manifest=true` returns a zip (dataset + manifest with source aggregation·sha256) |
+| GET | `/api/v1/datasets/export/manifest` | manifest preview — counts, distributions, **per-source aggregation (source_uri·license)**, file sha256 (for expert verification) |
+| GET | `/api/v1/datasets/runs` · `/runs/{run_id}` | **collection/refinement run history/detail** (F15) — per-stage pass/block counts, rejection reason samples, source aggregation, channel filter |
+| POST | `/api/v1/records/ingest` | ingest: **gate ③ attribution check (F14 — records missing `source_uri`·`source_hash_sha256` get `rejected_attribution`)** → pseudonymize → dedup → queue as pending; response includes `run_id` |
 | POST | `/api/v1/records/upload` | **multi-file upload** — JSONL/JSON (F6 convert) + **documents PDF/DOCX/TXT/MD/HTML** (text extraction → needs_annotation record). UI directory picker uses this too |
 | POST | `/api/v1/records/collect/dir` | server-path glob collection (CLI/ops) |
 | POST | `/api/v1/records/collect/url` | **web collection** — whitelist + SSRF guard, response-type auto-detect (JSON=records / HTML=document), T3_untrusted |
 | GET | `/api/v1/records/augment/suggestions` | **auto-suggested substitutions** — frequency × security synonym dictionary over approved records |
-| GET | `/api/v1/records/queue?state=pending` | review queue listing (created_at=UTC ISO — rendered in browser locale) |
+| GET | `/api/v1/records/queue/groups?state=` | **review queue group summary** — per-dataset_version counts, grade/task_type distribution, source aggregation, collection time range (UI step ① groups) |
+| POST | `/api/v1/records/queue/review-group` | **group bulk approve/reject** — `{dataset_version, action, reviewer}`, processes all pending in the group; reject cascades lineage (individual review still available) |
+| GET | `/api/v1/records/queue?state=pending&dataset_version=` | review queue listing — `dataset_version` filter (detail list when a group is selected), **always exposes source (source_uri·license, F14)**; created_at=UTC ISO (rendered in browser locale) |
 | GET | `/api/v1/records/{record_id}` | record detail (payload content for review) |
 | DELETE | `/api/v1/records/{record_id}` | delete record — cascades to augmented children; UI confirms via popup |
 | POST | `/api/v1/records/{record_id}/review` | approve/reject (`{"action":"approve\|reject","reviewer":"..."}`) — reject cascades to augmented children |
@@ -201,6 +206,10 @@ uv run secuftpl models manifest
 uv run secuftpl models scan discovered.jsonl
 uv run secuftpl models download-plan Qwen/Qwen3-14B
 uv run secuftpl dataset augment --substitutions '{"apache":"nginx"}'
+uv run secuftpl dataset export out.jsonl --format alpaca      # F13 download + manifest (.manifest.json)
+uv run secuftpl dataset export out.jsonl --input other.jsonl  # use a separate dataset file instead of the DB (offline reprocessing)
+uv run secuftpl dataset runs                                  # F15 collection/refinement run history (--run-id for detail)
+uv run secuftpl dataset backfill-attribution                  # F14 detect legacy records missing attribution (dry-run; --apply to tag)
 uv run secuftpl tune create Qwen/Qwen3-14B --dataset-version v0.1.0
 uv run secuftpl tune plan <job_id>                 # QLoRA plan → run on worker
 uv run secuftpl tune evaluate preds.jsonl --model-id m --dataset-version v1
@@ -231,7 +240,7 @@ as JSON/tar.gz. Requires: `curl`·`jq`·`uv`·`python3` (synthetic record genera
 ## Test
 
 ```bash
-make test           # uv run pytest (single test/ tree, backend 136 cases)
+make test           # uv run pytest (single test/ tree, backend 150 cases)
 make front-test      # frontend Vitest unit tests (7 cases)
 make front-test-e2e  # frontend Playwright e2e (2 cases, auto-starts dev server)
 ```
@@ -253,8 +262,12 @@ training) · `31st/` (F11 multi-runtime export) · `32nd/` (F12 eval metric guid
 `33rd~34th/` (frontend F9~F12 wiring) · `35th/` (F9 real queuing) · `36th/` (ops cron wiring) ·
 `37th/` (job progress WebSocket streaming) · `38th/` (frontend Vitest/Playwright wiring + F11
 real MLX export) · `39th/` (augmentation — paraphrase) ·
-`40th/` (one-stop pipeline script, manual E2E) —
-all PASS (136 backend cases + 9 frontend cases + E2E).
+`40th/` (one-stop pipeline script, manual E2E) ·
+`41st/` (F13 dataset download+manifest · F14 mandatory attribution · F15 pipeline run tracking) ·
+`42nd/` (review queue grouping — group→detail→record 3-step navigation·group summary) ·
+`43rd/` (group bulk approve/reject — coexists with individual review) ·
+`44th/` (record detail as div popup modal) —
+all PASS (150 backend cases + 9 frontend cases + E2E).
 
 ## Troubleshooting
 
@@ -319,3 +332,7 @@ all PASS (136 backend cases + 9 frontend cases + E2E).
 - ~~ops cron wiring~~ — `GET /api/v1/batch/cron-plan` (same as CLI `secuftpl batch cron-plan`)
   generates crontab lines for `FT_TRIGGER_SCHEDULE_CRON`·`HF_POLLING_CRON` done (impl/36th).
   **Never installs automatically** — ops applies the output via `crontab -e`
+- ~~F13~F15 dataset export·mandatory attribution·run tracking (E12)~~ — `GET /datasets/export`
+  (+manifest zip)·`/runs`, gate ③ `rejected_attribution`, per-channel auto-stamping, CLI
+  `dataset export/--input·runs·backfill-attribution` done (impl/41st). **One-time on production
+  rollout**: tag legacy records via `uv run secuftpl dataset backfill-attribution --apply`

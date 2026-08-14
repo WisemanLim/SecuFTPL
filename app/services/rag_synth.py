@@ -74,6 +74,7 @@ def synthesize_records(chunks: list[str], task_type: str, dataset_version: str,
                 "record_id": f"rag-{digest}", "source_type": "rag_synthesis",
                 "task_type": task_type, "dataset_version": dataset_version,
                 "quality_grade": "augmented", "source_uri": source_uri,
+                "source_hash_sha256": hashlib.sha256(chunk.encode()).hexdigest(),
                 "trust_tier": "T2_internal",
             },
         })

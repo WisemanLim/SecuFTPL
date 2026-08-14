@@ -45,6 +45,17 @@ def scan_text(text: str) -> list[str]:
     return findings
 
 
+# license 는 스키마 기본값(internal-restricted)으로 항상 채워짐 — URI·hash 만 반입 차단 기준
+REQUIRED_ATTRIBUTION_FIELDS = ("source_uri", "source_hash_sha256")
+
+
+def attribution_errors(raw: dict) -> list[str]:
+    """게이트 ③ 출처 확인 (PRD F14) — source_uri/source_hash_sha256/license 누락 시 반입 거부."""
+    meta = raw.get("metadata") or {}
+    return [f"metadata.{field}: required for ingest (attribution, PRD F14)"
+            for field in REQUIRED_ATTRIBUTION_FIELDS if not meta.get(field)]
+
+
 def validate_record(raw: dict) -> list[str]:
     """레코드 한 건 검증 → 오류 목록(빈 목록 = 통과)."""
     try:

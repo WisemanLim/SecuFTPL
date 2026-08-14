@@ -121,12 +121,17 @@ Makefile 이 honcho 엔 `-e .env.$(ENV)`, pm2 엔 `ENV_FILE=.env.$(ENV)` 로 주
 | GET | `/api/v1/datasets/formats` | 지원 포맷 목록 (canonical=sft-messages) |
 | POST | `/api/v1/datasets/validate` | canonical 레코드 배치 검증(정제 게이트 리포트) |
 | POST | `/api/v1/datasets/convert` | 포맷 변환 (alpaca/sharegpt/openai-chat ↔ canonical, export: dpo-pairs·eval-set) |
-| POST | `/api/v1/records/ingest` | 수집: 게이트→가명화→중복제거→pending 적재 |
+| GET | `/api/v1/datasets/export` | **데이터셋 다운로드**(F13) — `format`/`review_state`(기본 approved)/`dataset_version` 필터, JSONL 스트림. `with_manifest=true` 면 zip(dataset+manifest — 출처 집계·sha256) |
+| GET | `/api/v1/datasets/export/manifest` | manifest 미리보기 — 건수·분포·**출처별 집계(source_uri·license)**·파일 sha256 (전문가 검증용) |
+| GET | `/api/v1/datasets/runs` · `/runs/{run_id}` | **수집·정제 run 이력/상세**(F15) — 단계별 통과/차단 건수·사유 샘플·출처 집계, 채널 필터 |
+| POST | `/api/v1/records/ingest` | 수집: **게이트③ 출처 확인(F14 — `source_uri`·`source_hash_sha256` 누락 시 `rejected_attribution`)**→가명화→중복제거→pending 적재, 응답에 `run_id` 포함 |
 | POST | `/api/v1/records/upload` | **파일(멀티) 업로드** — JSONL/JSON(F6 변환) + **문서 PDF/DOCX/TXT/MD/HTML**(텍스트 추출→주석 대기 레코드). UI 디렉토리 선택도 이 경로 |
 | POST | `/api/v1/records/collect/dir` | 서버 경로 glob 수집 (CLI/ops 용) |
 | POST | `/api/v1/records/collect/url` | **인터넷 수집** — 화이트리스트+SSRF 차단, 응답 유형 자동 판별(JSON=레코드/HTML=문서), T3_untrusted |
 | GET | `/api/v1/records/augment/suggestions` | **치환 후보 자동 추천** — 승인 레코드 빈도×보안 동의어 사전 |
-| GET | `/api/v1/records/queue?state=pending` | 검수 큐 조회 (created_at=UTC ISO — 화면 locale 변환) |
+| GET | `/api/v1/records/queue/groups?state=` | **검수 큐 그룹 요약** — dataset_version 단위 건수·grade/task_type 분포·출처 집계·수집 시각 범위 (UI ①그룹 단계) |
+| POST | `/api/v1/records/queue/review-group` | **그룹 일괄 승인/반려** — `{dataset_version, action, reviewer}`, pending 전건 처리·반려 시 lineage 연쇄 폐기 (개별 검수 공존) |
+| GET | `/api/v1/records/queue?state=pending&dataset_version=` | 검수 큐 조회 — `dataset_version` 필터(그룹 선택 시 세부 목록), **출처(source_uri·license) 상시 노출(F14)**, created_at=UTC ISO(화면 locale 변환) |
 | GET | `/api/v1/records/{record_id}` | 레코드 상세 (payload 내용 확인 — 검수용) |
 | DELETE | `/api/v1/records/{record_id}` | 레코드 삭제 — 증강본 연쇄 삭제, UI 는 확인 팝업 후 호출 |
 | POST | `/api/v1/records/{record_id}/review` | 승인/반려 (`{"action":"approve\|reject","reviewer":"..."}`) — 반려 시 증강본 연쇄 폐기 |
@@ -201,6 +206,10 @@ uv run secuftpl models manifest
 uv run secuftpl models scan discovered.jsonl       # 이벤트 유사판정 → candidate
 uv run secuftpl models download-plan Qwen/Qwen3-14B
 uv run secuftpl dataset augment --substitutions '{"아파치":"nginx"}'
+uv run secuftpl dataset export out.jsonl --format alpaca      # F13 다운로드 + manifest(.manifest.json)
+uv run secuftpl dataset export out.jsonl --input other.jsonl  # DB 대신 별도 파일 입력(오프라인 재가공)
+uv run secuftpl dataset runs                                  # F15 수집·정제 run 이력 (--run-id 상세)
+uv run secuftpl dataset backfill-attribution                  # F14 출처 누락 레거시 감지(dry-run, --apply 반영)
 uv run secuftpl tune create Qwen/Qwen3-14B --dataset-version v0.1.0
 uv run secuftpl tune plan <job_id>                 # QLoRA 플랜 → worker 실행
 uv run secuftpl tune evaluate preds.jsonl --model-id m --dataset-version v1
@@ -231,7 +240,7 @@ AUGMENT_METHOD=backtranslate ./scripts/run-pipeline.sh                # Ollama �
 ## 테스트
 
 ```bash
-make test          # uv run pytest (test/ 단일 트리, backend 136건)
+make test          # uv run pytest (test/ 단일 트리, backend 150건)
 make front-test    # frontend Vitest 단위 시험 (7건)
 make front-test-e2e  # frontend Playwright e2e (2건, dev 서버 자동 기동)
 ```
@@ -250,8 +259,11 @@ make front-test-e2e  # frontend Playwright e2e (2건, dev 서버 자동 기동)
 `32nd/`(F12 평가지표 가이드) · `33rd~34th/`(frontend F9~F12 연동) · `35th/`(F9 실제 큐잉) ·
 `36th/`(ops cron 배선) · `37th/`(잡 진행 WebSocket 스트리밍) ·
 `38th/`(frontend Vitest/Playwright 배선 + F11 실 MLX export) · `39th/`(증강 — 패러프레이즈) ·
-`40th/`(원스톱 파이프라인 스크립트, 수동 E2E) —
-전부 PASS (백엔드 136건 + frontend 9건 + E2E).
+`40th/`(원스톱 파이프라인 스크립트, 수동 E2E) ·
+`41st/`(F13 데이터셋 다운로드+manifest · F14 출처 필수화 · F15 파이프라인 run 추적) ·
+`42nd/`(검수 큐 그룹핑 — 그룹→세부→레코드 3단계·그룹 요약) ·
+`43rd/`(그룹 일괄 승인/반려 — 개별 검수 공존) · `44th/`(레코드 내용 div 팝업 모달) —
+전부 PASS (백엔드 150건 + frontend 9건 + E2E).
 
 ## 트러블슈팅
 
@@ -309,3 +321,7 @@ make front-test-e2e  # frontend Playwright e2e (2건, dev 서버 자동 기동)
 - ~~ops cron 배선~~ — `GET /api/v1/batch/cron-plan`(`secuftpl batch cron-plan` CLI 동일) 로
   `FT_TRIGGER_SCHEDULE_CRON`·`HF_POLLING_CRON` crontab 라인 생성 완료(impl/36th). **자동 설치는
   하지 않음** — ops가 출력을 `crontab -e`로 직접 반영
+- ~~F13~F15 데이터셋 export·출처 필수화·run 추적(E12)~~ — `GET /datasets/export`(+manifest zip)·
+  `/runs`, 게이트③ `rejected_attribution`, 채널별 자동 스탬핑, CLI `dataset export/--input·runs·
+  backfill-attribution` 완료(impl/41st). **운영 반영 시 1회**: 레거시 레코드 출처 태깅
+  `uv run secuftpl dataset backfill-attribution --apply`

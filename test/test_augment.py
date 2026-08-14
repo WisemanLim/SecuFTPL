@@ -39,7 +39,7 @@ def client():
 def _rec(rid, user):
     return {"messages": [{"role": "user", "content": user},
                          {"role": "assistant", "content": "T1059.001 대응 절차 안내"}],
-            "metadata": {"record_id": rid, "source_type": "manual",
+            "metadata": {"record_id": rid, "source_uri": "test://fixture", "source_hash_sha256": "f" * 64, "source_type": "manual",
                          "task_type": "alert_triage", "dataset_version": "v0.1.0"}}
 
 

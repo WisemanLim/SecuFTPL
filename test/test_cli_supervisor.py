@@ -29,7 +29,7 @@ def isolated_db(monkeypatch):
 def make_record(rid):
     return {"messages": [{"role": "user", "content": f"질의 {rid}"},
                          {"role": "assistant", "content": f"답변 {rid}"}],
-            "metadata": {"record_id": rid, "source_type": "manual",
+            "metadata": {"record_id": rid, "source_uri": "test://fixture", "source_hash_sha256": "f" * 64, "source_type": "manual",
                          "task_type": "alert_triage", "dataset_version": "v0.1.0"}}
 
 

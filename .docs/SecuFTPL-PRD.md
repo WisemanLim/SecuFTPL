@@ -15,7 +15,7 @@
   구조화 출력 유효성·ATT&CK 매핑 정확도·환각 억제가 부족하다. 근거 문서가 제시하듯
   "공개 instruct 모델 + PEFT(QLoRA) 파인튜닝 + 평가 게이트" 조합이 비용·통제·성능 면에서 최적이며,
   wise-FP 자산(frontend/worker/ops)이 이미 있어 도메인 특화 비용이 낮다.
-- **작성자 / 날짜 / 버전**: Wiseman Lim / 2026-08-12 (초안) → 2026-08-13 고도화 / v0.2 (F9~F12 추가)
+- **작성자 / 날짜 / 버전**: Wiseman Lim / 2026-08-12 (초안) → 2026-08-13 v0.2 (F9~F12) → 2026-08-14 v0.3 (F13~F15: 데이터셋 다운로드·출처 필수화·파이프라인 추적)
 
 ## 2. 문제와 대상 (Why & Who)
 
@@ -57,6 +57,9 @@
 | F10 | **RAG 기반 추가학습(모델 업그레이드)** — 베이스모델(+기존 어댑터)에 RAG 코퍼스(문서/벡터DB)로 합성한 QA/지식 데이터를 continual fine-tuning → 신규 모델 버전으로 승격, 기존 평가 게이트·리더보드 동일 적용 | P1 | 2026-08-13 추가 |
 | F11 | **다중 런타임 배포·풀모델 export** — 배포 대상(Ollama/vLLM/llama.cpp/MLX) 선택 → 어댑터 merge 후 풀모델(safetensors) 저장, 런타임별 포맷 변환(GGUF/MLX) → 어댑터 외 풀모델 파일 다운로드/서빙 등록 | P0 | 2026-08-13 추가 |
 | F12 | **평가지표 가이드·추천** — task_type·데이터셋 특성 기반 추천 평가지표 세트(§5) 제시, 지표 선택 UI에 가이드 문구·기본값 사전 채움 | P1 | 2026-08-13 추가 |
+| F13 | **데이터셋 다운로드(export)** — 수집·정제·검수를 거쳐 구성된 데이터셋(개별 문서/디렉토리 수집 결과 포함)을 포맷 선택(canonical/alpaca/sharegpt/openai-chat/dpo-pairs/eval-set, F6 어댑터 재사용)하여 JSONL 파일로 다운로드. manifest(출처 요약·sha256·건수 통계) 동봉 | P0 | 2026-08-14 추가 |
+| F14 | **출처(attribution) 필수 명기** — 모든 수집 채널에서 `source_uri`·`source_hash_sha256`·`license` **필수화**(자동 스탬핑 + 누락 시 반입 거부), 검수 큐·다운로드 manifest 에 출처 표시, 출처별 집계 리포트 | P0 | 2026-08-14 추가 |
+| F15 | **수집·정제 파이프라인 실행 추적** — 데이터셋 구성 실행(run) 단위로 단계별(수집→게이트②~⑧→검수→버전화) 통과/차단 건수·사유·출처 통계를 기록·조회(보안전문가 검증 근거 자료) | P1 | 2026-08-14 추가 |
 
 ### Out of Scope (이번 릴리즈에서 하지 않을 것)
 
@@ -98,6 +101,8 @@
 | 데이터셋 | 증강 배수(원본 대비) | 1x | 3~5x (가정: 언어변환 2종 + 키워드 치환) | 증강 파이프라인 통계 |
 | RAG 업그레이드 | RAG 추가학습 후 평가 지표 개선폭(F10) | 업그레이드 전 모델 평가치 | 회귀 없음 + 대상 지표 개선 (가정) | 업그레이드 전/후 리더보드 diff |
 | 배포 | 런타임별 export 성공률(F11: Ollama/vLLM/llama.cpp/MLX) | — (신규) | ≥ 95% (가정) | export 잡 로그 |
+| 데이터셋 | 출처 필수 필드(source_uri/hash/license) 충족률(F14) | 현행 저장 레코드 측정치 | 신규 수집 100% | 레코드 metadata 집계 |
+| 데이터셋 | 데이터셋 다운로드(F13) manifest-파일 hash 일치율 | — (신규) | 100% | export manifest 검증 |
 
 > 기준선은 F1 첫 벤치마크(무튜닝 베이스모델 평가)에서 확정한다. 모든 `가정:` 값은 확정 후 갱신.
 
@@ -374,6 +379,15 @@ GGUF_QUANT_PRESET=q4_k_m            # Ollama/llama.cpp 변환 시 기본 양자�
 | 2026-08-13 | **frontend Vitest/Playwright 배선 + F11 MLX 실 변환(impl/38th)** — 사용자가 잔여 설치 전부 승인, 이 머신(Apple Silicon)에 맞는 항목만 실제 설치·구현·검증(frontend 시험 9건, `mlx-lm`으로 `POST /jobs/{id}/export/mlx` 실행 경로, 공개 초소형 테스트 모델로 실 변환 검증). vLLM·실 QLoRA(bitsandbytes CUDA)·llama.cpp 실행은 하드웨어 미지원 + `_real_available()` 자동전환 위험(발견) 때문에 `.docs/GPU-실학습-배포-가이드.md` 로 별도 문서화 | impl/38th |
 | 2026-08-13 | **증강: 패러프레이즈(impl/39th)** — `method: paraphrase`(LLM 문장 재구성, Ollama 백엔드) — §7.4 증강 표 3항목(키워드 치환·역번역·패러프레이즈) 전부 구현 완료. `.docs/GPU-실학습-배포-가이드.md` §1에 §2 형식으로 frontend 시험·MLX 설치 절차 보강(사용자 요청, 문서만) | impl/39th |
 | 2026-08-13 | **원스톱 파이프라인 스크립트(impl/40th)** — `scripts/run-pipeline.sh`(F8 확장, §7.10) — 모델 선택→수집→검수→증강→튜닝→게이트→리더보드→배포 전 과정을 curl 오케스트레이션으로 한 번에 실행, 백엔드 자동 기동/정리 포함(사용자 요청) | impl/40th |
+| 2026-08-14 | **고도화 v0.3** — F13(데이터셋 다운로드+manifest)·F14(출처 필수 명기·자동 스탬핑·마이그레이션)·F15(수집·정제 파이프라인 run 추적) 신규 스코프, §7.15 기술노트, E12 신규 Epic | 사용자 요구(전문가 검증용 다운로드·출처 필수화·파이프라인 상세화) |
+| 2026-08-14 | CLI 별도 데이터셋 파일 입력 — `dataset export --input FILE.jsonl` 옵션(DB 대신 파일 입력, §7.15 F13·§7.10 F8 확장) | 사용자 요구(CLI 파일 옵션) |
+| 2026-08-14 | 검수 큐 그룹핑 UX — 그룹(dataset_version)→세부 목록→레코드 내용 3단계, 그룹 요약 패널, `GET /queue/groups`·`queue?dataset_version=` 필터(§7.15) | 사용자 요구(대량 수집 검수 불편) |
+| 2026-08-14 | 그룹 단위 일괄 승인/반려 — `POST /queue/review-group`(pending 전건, 반려 시 lineage 연쇄), 개별 검수 유지(§7.15) | 사용자 요구(일괄 검수) |
+| 2026-08-14 | 레코드 내용 div 팝업(모달) — 세부 목록 행 선택 시 하단 패널 대신 중앙 오버레이 표시(§7.15) | 사용자 요구(최하단 스크롤 불편) |
+| 2026-08-14 | **레코드 내용 모달 구현 완료(impl/44th)** — 세부 행 클릭 시 중앙 div 팝업(배경 클릭·닫기·ESC), frontend 전용 | impl/44th |
+| 2026-08-14 | **그룹 일괄 승인/반려 구현 완료(impl/43rd)** — `POST /queue/review-group`(pending 전건·lineage 연쇄), UI 그룹 행·세부 패널 일괄 버튼+확인 팝업, 개별 검수 공존. backend 150·frontend 7 통과 | impl/43rd |
+| 2026-08-14 | **검수 큐 그룹핑 구현 완료(impl/42nd)** — `GET /queue/groups`(dataset_version 요약)·`queue?dataset_version=` 필터, frontend 3단계(그룹→세부→레코드)+그룹 요약 로그. backend 147·frontend 7 통과 | impl/42nd |
+| 2026-08-14 | **F13~F15 구현 완료(impl/41st)** — `GET /datasets/export`(+manifest zip)·`/export/manifest`·`/runs`, 게이트 ③ `rejected_attribution`, 채널별 자동 스탬핑, `pipeline_runs` 추적, CLI `dataset export/--input·runs·backfill-attribution`, frontend 다운로드 섹션·검수 큐 출처 표시. **E12 완료** — backend 144·frontend 7 시험 통과 | impl/41st |
 
 ### 7.10 Supervisor UI · CLI (F7·F8 — 2026-08-13 추가)
 
@@ -470,6 +484,47 @@ GGUF_QUANT_PRESET=q4_k_m            # Ollama/llama.cpp 변환 시 기본 양자�
   실 QLoRA 학습(§7.5)은 CUDA 전용(bitsandbytes) + `_real_available()` 설치 시 테스트 스위트
   자동전환 위험이 있어 별도 GPU 환경 가이드로 분리(같은 문서 §2.2).
 
+### 7.15 데이터셋 다운로드·출처 필수화·파이프라인 실행 추적 (F13~F15, 2026-08-14 추가)
+
+**배경**: 보안분야는 주기적으로 발표되는 자료(CVE/KEV/권고문/보고서)의 지속 학습이 필요하고,
+생성된 데이터셋은 보안전문가 검증이 필수다. 검증을 위해 ①구성 결과를 파일로 내려받아 외부 검토
+가능해야 하고 ②모든 레코드의 출처가 추적 가능해야 하며 ③정제 파이프라인의 단계별 근거가 남아야 한다.
+
+- **F13 데이터셋 다운로드(export)**:
+  - `GET /api/v1/datasets/export?dataset_version=&format=&review_state=` —
+    조건(버전·검수 상태 기본 approved)에 맞는 레코드를 F6 어댑터로 변환해 JSONL 스트리밍 다운로드.
+  - manifest 동봉 옵션(`?with_manifest=true` → zip): `manifest.json` 에 dataset_version,
+    건수, task_type/quality_grade/source_type 별 분포, **출처별 집계(source_uri·license·건수)**,
+    전체 파일 sha256, 생성 시각 포함 — 에어갭 반입·전문가 검증 증빙 겸용.
+  - frontend 데이터셋 페이지 + Supervisor UI 에 다운로드 버튼(포맷 선택), CLI `secuftpl dataset export`.
+  - **CLI 별도 파일 입력(2026-08-14 추가)**: `secuftpl dataset export OUT.jsonl --input FILE.jsonl` —
+    DB 대신 **별도 데이터셋 파일(JSONL)을 input param 옵션으로** 지정해 포맷 변환·manifest 생성 가능
+    (오프라인/망분리 환경에서 반출 파일 재가공 지원, F8 확장).
+  - 개별 문서/디렉토리 수집 결과도 동일 경로 — 수집 직후(needs_annotation 포함) 상태로도
+    `review_state=all` 지정 시 다운로드 가능(검수 전 외부 주석 작업 지원).
+- **F14 출처 필수 명기**:
+  - RecordMetadata 의 `source_uri`·`source_hash_sha256`·`license` 를 **필수(수집 시점 스탬핑)** 로 승격.
+    채널별 자동 스탬핑: 파일 업로드=파일명+내용 sha256, 디렉토리=파일 경로+sha256, URL=요청 URL+응답 sha256,
+    Assistant 환류=세션/질의 ID, RAG 합성=원본 문서 URI(계보). 수동 ingest 는 미기재 시 422 거부(게이트 ③ 강화).
+  - 기존 저장 레코드는 마이그레이션: 누락 필드 `source_uri=legacy:unknown` 태깅 후 검수 큐 재분류(가정).
+  - 검수 큐·레코드 상세 UI 에 출처(URI·license·hash 축약) 상시 표시, 출처별 필터.
+- **F15 파이프라인 실행 추적**:
+  - 수집 API 호출 1회 = 1 run: 단계별(②주입탐지→③출처확인→④비밀/PII→⑤가명화→⑥중복→⑦스키마) 통과/차단
+    건수와 차단 사유 샘플을 `pipeline_runs` 로 기록, `GET /api/v1/datasets/runs`·`/runs/{id}` 조회.
+  - run 리포트 = 전문가 검증 자료: 어떤 소스에서 몇 건이 어떤 사유로 걸러졌는지 감사 가능(append-only, §7.6 감사 NFR).
+- **검수 큐 그룹핑 UX (2026-08-14 추가)**: 대량 수집(예: 파이프라인 500건×증강) 시 평면 목록은 검수 불가 —
+  3단계 탐색으로 개선. ① **그룹 목록**: `dataset_version` 단위 그룹(레코드 수·grade 분포·task_type·출처 요약·수집 시각)
+  ② **세부 목록**: 그룹 선택 시 해당 레코드 목록(기존 테이블 + 승인/반려/삭제) ③ **레코드 내용**: 세부 선택 시 payload 상세.
+  하단 로그 영역은 **선택 그룹 요약**(건수·분포·출처 집계)을 표시. API: `GET /records/queue/groups?state=`,
+  `GET /records/queue?state=&dataset_version=` 필터.
+  - **그룹 단위 일괄 승인/반려 (2026-08-14 추가)**: `POST /records/queue/review-group`
+    (`{dataset_version, action, reviewer}`) — 해당 그룹의 pending 전건 일괄 처리. 반려 시 증강본
+    연쇄 폐기(개별 검수와 동일 규칙), 처리 건수·연쇄 반려 목록 반환. UI 는 그룹 행/세부 패널에
+    "전체 승인/전체 반려" 버튼 + 확인 팝업. **기존 개별 검수(레코드 단위 승인/반려)는 그대로 유지.**
+  - **레코드 내용 = div 팝업(모달) (2026-08-14 추가)**: 세부 목록에서 행 선택 시 레코드 내용을
+    페이지 하단 패널이 아닌 **화면 중앙 오버레이(div 모달)** 로 표시 — 긴 목록에서 최하단 스크롤
+    없이 목록을 이동하며 연속 검수 가능. 배경 클릭/닫기로 닫힘, 모달 내 승인/반려/삭제 동일 제공.
+
 ## 8. 실행 연결 (Epic / Story 힌트)
 
 | Epic | 내용 | 의존 |
@@ -485,6 +540,7 @@ GGUF_QUANT_PRESET=q4_k_m            # Ollama/llama.cpp 변환 시 기본 양자�
 | E9. 리소스/모니터링 ✅ | 잡별 리소스 세부설정·실시간 모니터링 대시보드·백그라운드 지속성(F9) — impl/29th | E3 |
 | E10. RAG 추가학습 ✅ | RAG 코퍼스 합성 데이터 파이프라인·continual FT·모델 버전 승격(F10) — impl/30th | E1~E3 |
 | E11. 다중 런타임 export ✅ | 어댑터 merge·GGUF/MLX 변환 플랜·런타임별 배포 아티팩트·평가지표 가이드(F11·F12) — impl/31st~32nd | E3 |
+| E12. 데이터셋 export·출처·추적 | 데이터셋 다운로드+manifest(F13)·출처 필수화/마이그레이션(F14)·파이프라인 run 추적(F15) — §7.15 | E1 |
 
 권장 순서: E1·E2 병행 → E3 → E4·E5 병행 → E6 → (E7·E9는 각 Epic과 병행) → E10 → E11.
 근거 문서 90일 로드맵과 정합.

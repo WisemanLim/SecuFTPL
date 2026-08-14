@@ -93,7 +93,7 @@ def _prepare(client, approve=1):
         client.post("/api/v1/records/ingest", json={"records": [{
             "messages": [{"role": "user", "content": f"경보 {rid} 분석 요청 상세 내용"},
                          {"role": "assistant", "content": f"분석 결과 {rid}"}],
-            "metadata": {"record_id": rid, "source_type": "manual",
+            "metadata": {"record_id": rid, "source_uri": "test://fixture", "source_hash_sha256": "f" * 64, "source_type": "manual",
                          "task_type": "alert_triage", "dataset_version": "v0.1.0"}}]})
         client.post(f"/api/v1/records/{rid}/review", json={"action": "approve", "reviewer": "t"})
 
@@ -121,7 +121,7 @@ def test_batch_no_pinned_model_skips(client):
     client.post("/api/v1/records/ingest", json={"records": [{
         "messages": [{"role": "user", "content": "경보"},
                      {"role": "assistant", "content": "분석"}],
-        "metadata": {"record_id": "r-x", "source_type": "manual",
+        "metadata": {"record_id": "r-x", "source_uri": "test://fixture", "source_hash_sha256": "f" * 64, "source_type": "manual",
                      "task_type": "alert_triage", "dataset_version": "v0.1.0"}}]})
     client.post("/api/v1/records/r-x/review", json={"action": "approve", "reviewer": "t"})
     run = client.post("/api/v1/batch/run", json={"mode": "schedule"}).json()

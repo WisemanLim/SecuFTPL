@@ -122,14 +122,29 @@ def build_document_record(text: str, filename: str, defaults: dict) -> dict:
     return normalize_records([record], "canonical", defaults)[0]
 
 
+def stamp_attribution(records: list[dict], source_uri: str, raw: bytes | str) -> list[dict]:
+    """출처 필수 스탬핑 (PRD F14 게이트 ③) — 수집 채널이 source_uri·source_hash_sha256 을 자동 명기.
+    레코드에 이미 값이 있으면 보존(원출처 우선), 없으면 채널 값으로 채운다."""
+    payload = raw.encode("utf-8") if isinstance(raw, str) else raw
+    digest = hashlib.sha256(payload).hexdigest()
+    for rec in records:
+        meta = rec.setdefault("metadata", {})
+        meta.setdefault("source_uri", source_uri)
+        meta.setdefault("source_hash_sha256", digest)
+    return records
+
+
 def collect_file(data: bytes, filename: str, source_format: str, defaults: dict) -> list[dict]:
     """단일 파일 수집 — 확장자 라우팅: 정형(JSONL/JSON) vs 문서(PDF/DOCX/TXT/MD/HTML)."""
     suffix = Path(filename).suffix.lower()
+    source_uri = defaults.get("source_uri") or f"upload://{filename}"
     if suffix in STRUCTURED_EXTS:
         items = parse_payload(data.decode("utf-8"), filename)
-        return normalize_records(items, source_format, dict(defaults))
+        return stamp_attribution(normalize_records(items, source_format, dict(defaults)), source_uri, data)
     if suffix in DOCUMENT_EXTS:
-        return [build_document_record(extract_document_text(data, filename), filename, dict(defaults))]
+        return stamp_attribution(
+            [build_document_record(extract_document_text(data, filename), filename, dict(defaults))],
+            source_uri, data)
     raise ValueError(f"unsupported file type: {suffix} (지원: jsonl/json/pdf/docx/txt/md/html)")
 
 
@@ -160,7 +175,8 @@ def collect_dir(path: str, pattern: str = "*.jsonl", source_format: str = "canon
         if not file.is_file():
             continue
         try:
-            recs = collect_file(file.read_bytes(), file.name, source_format, dict(defaults or {}))
+            recs = collect_file(file.read_bytes(), file.name, source_format,
+                                {**(defaults or {}), "source_uri": file.resolve().as_uri()})
             records.extend(recs)
             reports.append({"file": file.name, "records": len(recs), "status": "ok"})
         except ValueError as exc:  # JSONDecodeError·UnicodeDecodeError 포함
@@ -201,6 +217,6 @@ def collect_url(url: str, source_format: str = "canonical",
     suffix = Path(filename).suffix.lower()
     if suffix in STRUCTURED_EXTS or (suffix not in DOCUMENT_EXTS and text.lstrip()[:1] in ("{", "[")):
         items = parse_payload(text, filename if suffix in STRUCTURED_EXTS else "download.jsonl")
-        return normalize_records(items, source_format, merged)
-    return [build_document_record(
-        _strip_html(text) if text.lstrip().startswith("<") else text, filename or url, merged)]
+        return stamp_attribution(normalize_records(items, source_format, merged), url, text)
+    return stamp_attribution([build_document_record(
+        _strip_html(text) if text.lstrip().startswith("<") else text, filename or url, merged)], url, text)

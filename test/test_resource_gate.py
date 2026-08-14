@@ -44,7 +44,7 @@ def _approve_n(client, n):
         client.post("/api/v1/records/ingest", json={"records": [{
             "messages": [{"role": "user", "content": f"경보 {rid}"},
                          {"role": "assistant", "content": f"분석 {rid}"}],
-            "metadata": {"record_id": rid, "source_type": "manual",
+            "metadata": {"record_id": rid, "source_uri": "test://fixture", "source_hash_sha256": "f" * 64, "source_type": "manual",
                          "task_type": "alert_triage", "dataset_version": "v0.1.0"},
         }]})
         client.post(f"/api/v1/records/{rid}/review", json={"action": "approve", "reviewer": "t"})

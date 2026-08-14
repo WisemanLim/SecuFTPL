@@ -149,6 +149,81 @@ def dataset_augment(substitutions: str = typer.Option(..., help='JSON: {"아파�
         _echo(augment(AugmentRequest(substitutions=json.loads(substitutions)), db))
 
 
+@dataset_app.command("export")
+def dataset_export(
+    out: Path,
+    format: str = typer.Option("canonical", help="canonical|alpaca|sharegpt|openai-chat|dpo-pairs|eval-set"),
+    review_state: str = typer.Option("approved", help="approved|pending|rejected|all"),
+    dataset_version: str | None = typer.Option(None),
+    with_manifest: bool = typer.Option(True, help="manifest.json 함께 생성 (출처 집계·sha256)"),
+    input: Path | None = typer.Option(None, "--input", "-i",
+                                      help="DB 대신 별도 데이터셋 파일(JSONL) 입력 — 오프라인 재가공 (F8/F13)"),
+):
+    """데이터셋 다운로드(export, F13) — DB 또는 --input 파일에서 포맷 변환 + manifest 생성."""
+    from app.services.dataset_export import build_manifest, filter_by_version, to_jsonl
+
+    if input:
+        payloads = filter_by_version(_read_jsonl(input), dataset_version)
+        review_state = "all"  # 파일 입력은 DB 검수 상태와 무관 — manifest 에 all 로 명기
+    else:
+        from sqlalchemy import select
+
+        from app.models.records import DatasetRecordRow
+
+        with _session() as db:
+            q = select(DatasetRecordRow).order_by(DatasetRecordRow.id)
+            if review_state != "all":
+                q = q.where(DatasetRecordRow.review_state == review_state)
+            payloads = filter_by_version([r.payload for r in db.scalars(q)], dataset_version)
+    if not payloads:
+        typer.echo("no records match the given filters", err=True)
+        raise typer.Exit(1)
+    jsonl = to_jsonl(payloads, format)
+    out.write_bytes(jsonl)
+    report = {"out": str(out), "records": len(payloads), "format": format}
+    if with_manifest:
+        manifest = build_manifest(payloads, format, dataset_version, review_state, jsonl)
+        manifest_path = out.with_suffix(out.suffix + ".manifest.json")
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        report["manifest"] = str(manifest_path)
+    _echo(report)
+
+
+@dataset_app.command("runs")
+def dataset_runs(channel: str | None = None, limit: int = 50, run_id: str | None = None):
+    """수집·정제 파이프라인 run 이력/상세 조회 (F15)."""
+    from app.api.datasets import get_run, list_runs
+
+    with _session() as db:
+        _echo(get_run(run_id, db) if run_id else list_runs(db, channel, limit))
+
+
+@dataset_app.command("backfill-attribution")
+def dataset_backfill_attribution(apply: bool = typer.Option(False, help="미지정 시 dry-run")):
+    """F14 마이그레이션 — 출처 누락 기존 레코드에 source_uri=legacy:unknown 태깅(검수 상태 유지)."""
+    from sqlalchemy import select
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models.records import DatasetRecordRow
+
+    with _session() as db:
+        targets = []
+        for row in db.scalars(select(DatasetRecordRow)):
+            meta = (row.payload or {}).get("metadata") or {}
+            missing = [f for f in ("source_uri", "source_hash_sha256", "license") if not meta.get(f)]
+            if missing:
+                targets.append({"record_id": row.record_id, "missing": missing})
+                if apply:
+                    meta.setdefault("source_uri", "legacy:unknown")
+                    meta.setdefault("source_hash_sha256", row.content_hash)
+                    meta.setdefault("license", "internal-restricted")
+                    row.payload = {**row.payload, "metadata": meta}
+                    flag_modified(row, "payload")
+        if apply:
+            db.commit()
+        _echo({"applied": apply, "count": len(targets), "records": targets})
+
+
 # --- models ---
 
 @models_app.command("seed")

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.records import IngestRequest, ingest
+from app.api.records import IngestRequest, ingest_records
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.schemas import Satisfaction
@@ -56,10 +56,12 @@ def submit(req: FeedbackIn, db: DbSession) -> dict:
             # 👍=gold 후보(silver 로 적재, 검수 승인 시 승격 판단) / 👎=silver + 교정 필요
             "quality_grade": "silver",
             "satisfaction": sat.model_dump(),
-            "source_uri": f"assistant://{req.model_version or 'unknown'}",
+            # F14 출처 필수: 세션/질의 기반 URI + 원문 hash 스탬핑
+            "source_uri": f"assistant://{req.model_version or 'unknown'}/{rid}",
+            "source_hash_sha256": hashlib.sha256(f"{req.question}\n{req.answer}".encode()).hexdigest(),
         },
     }
-    result = ingest(IngestRequest(records=[record]), db)
+    result = ingest_records(IngestRequest(records=[record]), db, channel="assistant_feedback")
     return {"record_id": rid, "satisfaction": sat.model_dump(), "ingest": result}
 
 

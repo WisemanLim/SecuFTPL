@@ -31,7 +31,7 @@ def client():
 
 
 def make_record(rid, user="경보를 분석하라", lineage=None):
-    meta = {"record_id": rid, "source_type": "internal_ir_report",
+    meta = {"record_id": rid, "source_uri": "test://fixture", "source_hash_sha256": "f" * 64, "source_type": "internal_ir_report",
             "task_type": "alert_triage", "dataset_version": "v0.1.0"}
     if lineage:
         meta["lineage_of"] = lineage
@@ -54,7 +54,8 @@ def test_ingest_blocks_schema_error_and_exact_dup(client):
     dup_same_content = make_record("r-3", user="경보를 분석하라")
     dup_same_content["messages"][1]["content"] = "분석 결과 r-2"  # 내용 동일 → 해시 중복
     r1 = client.post("/api/v1/records/ingest", json={"records": [bad, rec]}).json()
-    assert r1["results"][0]["status"] == "rejected_gate" and r1["queued"] == 1
+    # 출처 없는 레코드는 게이트 ③(F14)에서 먼저 차단 — 스키마 검증보다 선행
+    assert r1["results"][0]["status"] == "rejected_attribution" and r1["queued"] == 1
     r2 = client.post("/api/v1/records/ingest", json={"records": [dup_same_content]}).json()
     assert r2["results"][0]["status"] == "skipped_exact_duplicate"
     assert r2["results"][0]["existing"] == "r-2"

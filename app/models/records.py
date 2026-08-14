@@ -23,6 +23,19 @@ class DatasetRecordRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class PipelineRunRow(Base):
+    """수집·정제 파이프라인 실행(run) 추적 (PRD F15 §7.15) — 단계별 통과/차단 통계, append-only."""
+
+    __tablename__ = "pipeline_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    channel: Mapped[str] = mapped_column(String(32), index=True)  # api_ingest|file_upload|dir_collect|web_collect|augment|rag_synthesis
+    stats: Mapped[dict] = mapped_column(JSON)      # total/queued/rejected_gate/rejected_attribution/skipped_* 건수 + 차단 사유 샘플
+    sources: Mapped[dict] = mapped_column(JSON)    # source_uri별 {count, license} 집계 (F14 출처 리포트)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class PseudonymRow(Base):
     """가명화 안정 토큰 매핑 — 전역 일관 치환(동일 원문=동일 토큰). 접근통제 대상(COMPLIANCE)."""
 
