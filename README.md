@@ -80,7 +80,8 @@ Docker Compose v2 · Helm(K8s) · GitHub Actions(uv sync→ruff→pytest)
 운영 옵션(PRD §7.9): `FT_TRIGGER_MODE=schedule` · `HF_EVENT_MODE=polling`(주 1회) ·
 `SATISFACTION_SCALE=binary` · `SERVING_STACK=ollama` · `DATASET_MIN_RECORDS=500`(튜닝 시작 게이트) ·
 `JOB_MAX_GPU=1`/`JOB_MAX_VRAM_GB=24`(잡 리소스 기본값, F9) ·
-`TOTAL_GPU_CAPACITY=2`(시스템 전체 동시 학습 상한, 초과 시 큐잉). 전체 키는 [.env.example](.env.example).
+`TOTAL_GPU_CAPACITY=2`(시스템 전체 동시 학습 상한, 초과 시 큐잉) ·
+`DOC_PARSER=auto`(PDF 파싱 백엔드: auto|pypdf|docling, F20). 전체 키는 [.env.example](.env.example).
 **실 시크릿 커밋 금지** — `.gitignore` 가 `.env.*` 차단(`!.env.example`).
 
 ## 실행 방법
@@ -122,7 +123,9 @@ Makefile 이 honcho 엔 `-e .env.$(ENV)`, pm2 엔 `ENV_FILE=.env.$(ENV)` 로 주
 | POST | `/api/v1/datasets/validate` | canonical 레코드 배치 검증(정제 게이트 리포트) |
 | POST | `/api/v1/datasets/convert` | 포맷 변환 (alpaca/sharegpt/openai-chat ↔ canonical, export: dpo-pairs·eval-set) |
 | GET | `/api/v1/datasets/export` | **데이터셋 다운로드**(F13) — `format`/`review_state`(기본 approved)/`dataset_version` 필터, JSONL 스트림. `with_manifest=true` 면 zip(dataset+manifest — 출처 집계·sha256) |
-| GET | `/api/v1/datasets/export/manifest` | manifest 미리보기 — 건수·분포·**출처별 집계(source_uri·license)**·파일 sha256 (전문가 검증용) |
+| GET | `/api/v1/datasets/export/manifest` | manifest 미리보기 — 건수·분포·**출처별 집계(source_uri·license + DPI: creator/license_url/provenance_notes)**·파일 sha256 (전문가 검증용) |
+| GET | `/api/v1/datasets/export/lmeval-task` | **lm-evaluation-harness 태스크 YAML**(F16) — eval-set export 와 짝으로 표준 하네스 등록 |
+| GET | `/api/v1/datasets/decontam?train_version=&eval_version=&k=13` | **13-gram 디컨탬**(F18) — 학습 후보 vs 평가셋 오염 검사(검사만, 삭제 없음) |
 | GET | `/api/v1/datasets/runs` · `/runs/{run_id}` | **수집·정제 run 이력/상세**(F15) — 단계별 통과/차단 건수·사유 샘플·출처 집계, 채널 필터 |
 | POST | `/api/v1/records/ingest` | 수집: **게이트③ 출처 확인(F14 — `source_uri`·`source_hash_sha256` 누락 시 `rejected_attribution`)**→가명화→중복제거→pending 적재, 응답에 `run_id` 포함 |
 | POST | `/api/v1/records/upload` | **파일(멀티) 업로드** — JSONL/JSON(F6 변환) + **문서 PDF/DOCX/TXT/MD/HTML**(텍스트 추출→주석 대기 레코드). UI 디렉토리 선택도 이 경로 |
@@ -153,7 +156,8 @@ Makefile 이 honcho 엔 `-e .env.$(ENV)`, pm2 엔 `ENV_FILE=.env.$(ENV)` 로 주
 | POST | `/api/v1/tuning/jobs/{id}/export/mlx` | **MLX 실 변환 실행**(F11) — `mlx-lm` 설치 시(`uv sync --extra mlx`) 실제 변환, 미설치 501·풀모델이 실 HF 가중치가 아니면 422 |
 | POST | `/api/v1/tuning/jobs/{id}/retry` | queued/failed 잡 재실행(백그라운드 재투입) |
 | DELETE | `/api/v1/tuning/jobs/{id}` | 잡 삭제(이벤트 로그 연쇄, running 차단) |
-| GET | `/api/v1/tuning/jobs/{id}/plan` | QLoRA 학습 플랜(YAML) 생성 |
+| GET | `/api/v1/tuning/jobs/{id}/plan?lora_variant=` | QLoRA 학습 플랜(YAML) 생성 — `lora_variant=lora\|rslora\|dora`(F19) |
+| GET | `/api/v1/tuning/jobs/{id}/train-plan/mlx` | **mlx-lm LoRA 실학습 명령 플랜**(F19, Apple Silicon) — 생성만, 실행은 worker/수동 |
 | POST | `/api/v1/tuning/jobs/{id}/complete` | 외부 worker 콜백 (지표 → 리더보드) |
 | GET | `/api/v1/tuning/leaderboard/detail/{model_id}` | **모델 세부내용** — 평가 이력(eval_id) + 튜닝 잡 |
 | DELETE | `/api/v1/tuning/leaderboard/{eval_id}` | 평가 결과 1건 삭제(잡·모델 유지) |
@@ -165,7 +169,7 @@ Makefile 이 honcho 엔 `-e .env.$(ENV)`, pm2 엔 `ENV_FILE=.env.$(ENV)` 로 주
 | GET | `/api/v1/batch/should-run` · POST `/run` | 배치 트리거 판정·실행 (E6, ops cron 호출) |
 | POST | `/api/v1/batch/gate` · GET `/runs` | 배포 게이트(하한+회귀 검사)·이력 |
 | GET | `/api/v1/batch/cron-plan` | **ops cron 배선** — 야간 배치·HF polling crontab 라인 생성(실행/설치 없음, `crontab -e` 로 직접 반영) |
-| POST | `/api/v1/rag/synthesize` · `/upload` | **RAG 코퍼스 → 합성 QA 레코드**(F10) — 텍스트/문서(PDF·DOCX·TXT·MD·HTML) 청킹 → cause/resolution 합성 → 검수 큐 편입 |
+| POST | `/api/v1/rag/synthesize` · `/upload` | **RAG 코퍼스 → 합성 QA 레코드**(F10) — 텍스트/문서(PDF·DOCX·TXT·MD·HTML) 청킹 → cause/resolution 합성 → 검수 큐 편입. `diversify=true`(F21): 질문 유형 회전+키워드 명시 커버리지 합성, 응답에 coverage 리포트 |
 | POST | `/api/v1/rag/upgrade` | **모델 업그레이드**(F10) — 승인된 (RAG 합성 포함) 데이터셋으로 continual fine-tuning 잡 제출, `continual_from_job_id`(선택)로 이어학습 기준 지정 |
 
 ```bash
@@ -240,7 +244,7 @@ AUGMENT_METHOD=backtranslate ./scripts/run-pipeline.sh                # Ollama �
 ## 테스트
 
 ```bash
-make test          # uv run pytest (test/ 단일 트리, backend 150건)
+make test          # uv run pytest (test/ 단일 트리, backend 169건)
 make front-test    # frontend Vitest 단위 시험 (7건)
 make front-test-e2e  # frontend Playwright e2e (2건, dev 서버 자동 기동)
 ```
@@ -262,8 +266,10 @@ make front-test-e2e  # frontend Playwright e2e (2건, dev 서버 자동 기동)
 `40th/`(원스톱 파이프라인 스크립트, 수동 E2E) ·
 `41st/`(F13 데이터셋 다운로드+manifest · F14 출처 필수화 · F15 파이프라인 run 추적) ·
 `42nd/`(검수 큐 그룹핑 — 그룹→세부→레코드 3단계·그룹 요약) ·
-`43rd/`(그룹 일괄 승인/반려 — 개별 검수 공존) · `44th/`(레코드 내용 div 팝업 모달) —
-전부 PASS (백엔드 150건 + frontend 9건 + E2E).
+`43rd/`(그룹 일괄 승인/반려 — 개별 검수 공존) · `44th/`(레코드 내용 div 팝업 모달) ·
+`45th~50th/`(Survey P0+P1 고도화 v0.4 — E13 벤치·평가 연동 / E14 jailbreak·KTO / E15 디컨탬·DPI /
+E16 lora_variant·mlx 플랜 / E17 DOC_PARSER / E18 커버리지 합성) —
+전부 PASS (백엔드 169건 + frontend 9건 + E2E).
 
 ## 트러블슈팅
 

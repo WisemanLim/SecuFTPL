@@ -81,6 +81,54 @@ def synthesize_records(chunks: list[str], task_type: str, dataset_version: str,
     return out
 
 
+# 질문 유형 회전 (PRD F21, Survey §1.2 GraphGen — 지식 커버리지 기반 다양화, LLM 불필요 lite 구현)
+QUESTION_STYLES: tuple[str, ...] = (
+    "근본 원인을 분석하라",
+    "단계별 대응 절차를 제시하라",
+    "영향 범위와 파급 효과를 평가하라",
+    "탐지 규칙(시그니처/행위) 관점에서 정리하라",
+    "경영 보고용으로 핵심만 요약하라",
+)
+_TOKEN_RE_MIN = 2
+
+
+def extract_keywords(chunks: list[str], top_n: int = 20) -> list[str]:
+    """청크 전체 빈도 기반 키워드(간이) — 커버리지 축. 한 글자·숫자만인 토큰 제외."""
+    freq: dict[str, int] = {}
+    for chunk in chunks:
+        for tok in chunk.split():
+            tok = tok.strip(".,()[]{}:;\"'`").lower()
+            if len(tok) > _TOKEN_RE_MIN and not tok.isdigit():
+                freq[tok] = freq.get(tok, 0) + 1
+    return [k for k, _ in sorted(freq.items(), key=lambda kv: -kv[1])[:top_n]]
+
+
+def coverage_synthesize(chunks: list[str], task_type: str, dataset_version: str,
+                        source_uri: str, synthesizer: Synthesizer | None = None) -> tuple[list[dict], dict]:
+    """지식 커버리지 합성 (F21) — 청크마다 질문 유형을 회전시키고 청크 내 상위 키워드를 질문에
+    명시해 동일 코퍼스에서 다양한 관점의 QA 를 생성. (records, coverage 리포트) 반환."""
+    keywords = extract_keywords(chunks)
+    records = synthesize_records(chunks, task_type, dataset_version, source_uri, synthesizer)
+    covered: dict[str, int] = {}
+    for i, (chunk, rec) in enumerate(zip(chunks, records)):
+        style = QUESTION_STYLES[i % len(QUESTION_STYLES)]
+        chunk_kws = [k for k in keywords if k in chunk.lower()][:3]
+        for k in chunk_kws:
+            covered[k] = covered.get(k, 0) + 1
+        focus = f" (핵심 키워드: {', '.join(chunk_kws)})" if chunk_kws else ""
+        rec["messages"][0]["content"] = (
+            f"{TASK_PROMPTS.get(task_type, TASK_PROMPTS['alert_triage'])} — {style}{focus}\n\n"
+            f"[RAG 코퍼스: {source_uri}]\n{chunk}")
+    coverage = {
+        "chunks": len(chunks),
+        "styles_used": [QUESTION_STYLES[i % len(QUESTION_STYLES)] for i in range(min(len(chunks), len(QUESTION_STYLES)))],
+        "keywords": keywords,
+        "covered": covered,
+        "uncovered": [k for k in keywords if k not in covered],
+    }
+    return records, coverage
+
+
 def synthesize_from_document(data: bytes, filename: str, task_type: str, dataset_version: str,
                              chunk_size: int = 800,
                              synthesizer: Synthesizer | None = None) -> list[dict]:

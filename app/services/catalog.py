@@ -53,6 +53,9 @@ core|SynamicTechnologies/CYBERT|encoder|Cybersecurity RoBERTa encoder
 core|kumarrohit1707/CYBER-BERT|encoder|Cybersecurity BERT baseline
 core|markusbayer/CySecBERT|encoder|Cybersecurity encoder comparison
 core|ZySec-AI/SecurityLLM|cyber-gen|Cybersecurity instruct comparison
+core|fdtn-ai/Foundation-Sec-8B-Instruct|cyber-gen|Cybersecurity instruct candidate (Survey §2.3)
+core|trend-cybertron/Llama-Primus-Base|cyber-gen|Trend Micro Primus open security pipeline reference (Survey §2.3)
+core|segolilylabs/Lily-Cybersecurity-7B-v0.2|cyber-gen|Small hand-curated security SFT comparison (Survey §2.3)
 core|WhiteRabbitNeo/Llama-3-WhiteRabbitNeo-8B-v2.0|cyber-gen|Offensive/defensive comparison; restricted evaluation only
 all|Qwen/Qwen2.5-Coder-32B|code-base|Base model for CPT/SFT experiments
 all|deepseek-ai/DeepSeek-Coder-V2-Instruct|code|Large MoE code candidate

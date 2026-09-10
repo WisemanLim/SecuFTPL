@@ -115,6 +115,45 @@ def export_manifest(
     return build_manifest(payloads, format, dataset_version, review_state, jsonl)
 
 
+@router.get("/decontam")
+def decontam(db: DbSession, train_version: str, eval_version: str, k: int = 13,
+             review_state: str = "approved") -> dict:
+    """13-gram 디컨탬 리포트 (F18) — train 후보 vs 평가셋 k-gram 오염 검사 (검사만, 삭제 없음)."""
+    if not 3 <= k <= 50:
+        raise HTTPException(status_code=422, detail="k must be within 3..50")
+    q = select(DatasetRecordRow).order_by(DatasetRecordRow.id)
+    if review_state != "all":
+        q = q.where(DatasetRecordRow.review_state == review_state)
+    payloads = [r.payload for r in db.scalars(q)]
+    train = filter_by_version(payloads, train_version)
+    evals = filter_by_version(payloads, eval_version)
+    if not train or not evals:
+        raise HTTPException(status_code=404,
+                            detail=f"records not found (train={len(train)}, eval={len(evals)})")
+    from app.services.dedup import decontaminate
+
+    return {"train_version": train_version, "eval_version": eval_version,
+            **decontaminate(train, evals, k)}
+
+
+@router.get("/export/lmeval-task")
+def export_lmeval_task(db: DbSession, dataset_version: str | None = None,
+                       review_state: str = "approved") -> Response:
+    """lm-evaluation-harness 태스크 YAML (F16) — eval-set JSONL export 와 짝으로 사용."""
+    q = select(DatasetRecordRow).order_by(DatasetRecordRow.id)
+    if review_state != "all":
+        q = q.where(DatasetRecordRow.review_state == review_state)
+    payloads = filter_by_version([r.payload for r in db.scalars(q)], dataset_version)
+    if not payloads:
+        raise HTTPException(status_code=404, detail="no records match the given filters")
+    from app.services.dataset_export import lmeval_task_yaml
+
+    stem = f"secuftpl-dataset-{dataset_version or 'all'}-{review_state}-eval-set"
+    yaml_text = lmeval_task_yaml(dataset_version, f"{stem}.jsonl")
+    return Response(yaml_text, media_type="text/yaml",
+                    headers={"Content-Disposition": f'attachment; filename="{stem}.task.yaml"'})
+
+
 @router.get("/runs")
 def list_runs(db: DbSession, channel: str | None = None, limit: int = 50) -> dict:
     """수집·정제 파이프라인 run 이력 (F15 §7.15) — 단계별 통계·출처 집계, append-only."""

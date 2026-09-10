@@ -28,6 +28,24 @@ def shingles(text: str, k: int = 3) -> set[str]:
     return {" ".join(tokens[i : i + k]) for i in range(len(tokens) - k + 1)}
 
 
+def decontaminate(candidates: list[dict], eval_records: list[dict], k: int = 13) -> dict:
+    """13-gram 디컨탬 (PRD F18, Survey §2.2 — DataTrove 방식 준용).
+    후보 레코드가 평가셋과 k-gram(토큰) 하나라도 공유하면 오염으로 표시 — train/test 누수·벤치 오염 방지."""
+    eval_shingles: set[str] = set()
+    for r in eval_records:
+        eval_shingles |= shingles(record_text(r), k)
+    contaminated = []
+    for r in candidates:
+        overlap = shingles(record_text(r), k) & eval_shingles
+        if overlap:
+            contaminated.append({
+                "record_id": (r.get("metadata") or {}).get("record_id"),
+                "matched_ngram_sample": min(overlap)[:200],
+            })
+    return {"k": k, "candidates": len(candidates), "eval_records": len(eval_records),
+            "contaminated_count": len(contaminated), "contaminated": contaminated}
+
+
 def jaccard(a: set[str], b: set[str]) -> float:
     if not a and not b:
         return 1.0

@@ -60,6 +60,12 @@
 | F13 | **데이터셋 다운로드(export)** — 수집·정제·검수를 거쳐 구성된 데이터셋(개별 문서/디렉토리 수집 결과 포함)을 포맷 선택(canonical/alpaca/sharegpt/openai-chat/dpo-pairs/eval-set, F6 어댑터 재사용)하여 JSONL 파일로 다운로드. manifest(출처 요약·sha256·건수 통계) 동봉 | P0 | 2026-08-14 추가 |
 | F14 | **출처(attribution) 필수 명기** — 모든 수집 채널에서 `source_uri`·`source_hash_sha256`·`license` **필수화**(자동 스탬핑 + 누락 시 반입 거부), 검수 큐·다운로드 manifest 에 출처 표시, 출처별 집계 리포트 | P0 | 2026-08-14 추가 |
 | F15 | **수집·정제 파이프라인 실행 추적** — 데이터셋 구성 실행(run) 단위로 단계별(수집→게이트②~⑧→검수→버전화) 통과/차단 건수·사유·출처 통계를 기록·조회(보안전문가 검증 근거 자료) | P1 | 2026-08-14 추가 |
+| F16 | **보안 벤치·평가 연동**(Survey §3 P0) — CTIBench 포맷 importer(eval-set 변환), lm-evaluation-harness 태스크 YAML export, 구조화 출력 2축 평가(스키마 유효성+**값 정확도**), 보안 특화 모델(Llama-Primus·Lily) 카탈로그 추가 | P1 | 2026-09-10 추가 |
+| F17 | **안전·선호 데이터**(Survey §3 P0·P1) — jailbreak 프롬프트 importer(safety_refusal 주석대기 레코드), 만족도 👍/👎 → **KTO** 포맷 export(쌍 불필요 선호학습) | P1 | 2026-09-10 추가 |
+| F18 | **정제 게이트 고도화**(Survey §3 P1) — **13-gram 디컨탬**(학습 후보 vs 평가셋 오염 검사), 출처 스키마 DPI 정렬(creator·license_url·provenance_notes 선택 필드 + manifest 반영) | P1 | 2026-09-10 추가 |
+| F19 | **학습 고도화**(Survey §3 P0) — QLoRA 플랜 `lora_variant`(lora/rslora/dora) 토글, **mlx-lm LoRA 실학습 경로**(Apple Silicon — 명령 플랜 + 가드된 실행) | P1 | 2026-09-10 추가 |
+| F20 | **문서 파싱 백엔드 선택**(Survey §3 P1) — `DOC_PARSER=auto\|pypdf\|docling` 옵션, docling 미설치 시 pypdf 자동 폴백(표·레이아웃 보존 업그레이드 경로) | P2 | 2026-09-10 추가 |
+| F21 | **RAG 합성 고도화**(Survey §3 P1) — 지식 커버리지 기반 질문 다양화(GraphGen-lite: 키워드 추출→질문 유형 회전→커버리지 리포트) | P2 | 2026-09-10 추가 |
 
 ### Out of Scope (이번 릴리즈에서 하지 않을 것)
 
@@ -328,6 +334,9 @@ JOB_MAX_VRAM_GB=24                  # 잡당 VRAM 상한(GB)
 TOTAL_GPU_CAPACITY=2                # 시스템 전체 동시 학습 GPU 상한 — 초과 시 실제 큐잉(impl/35th 구현,
                                      # JOB_QUEUE_ON_LIMIT=false(즉시 거부)는 미구현, 항상 큐잉)
 
+# --- Document parser backend (F20, 2026-09-10 추가) ---
+DOC_PARSER=auto                     # auto(기본, docling 있으면 사용) | pypdf | docling
+
 # --- Deployment export format (F11, 2026-08-13 추가) ---
 DEPLOY_EXPORT_DEFAULT=adapter       # adapter(기본, 경량) | full | gguf | mlx
 GGUF_QUANT_PRESET=q4_k_m            # Ollama/llama.cpp 변환 시 기본 양자화 프리셋
@@ -385,6 +394,8 @@ GGUF_QUANT_PRESET=q4_k_m            # Ollama/llama.cpp 변환 시 기본 양자�
 | 2026-08-14 | 그룹 단위 일괄 승인/반려 — `POST /queue/review-group`(pending 전건, 반려 시 lineage 연쇄), 개별 검수 유지(§7.15) | 사용자 요구(일괄 검수) |
 | 2026-08-14 | 레코드 내용 div 팝업(모달) — 세부 목록 행 선택 시 하단 패널 대신 중앙 오버레이 표시(§7.15) | 사용자 요구(최하단 스크롤 불편) |
 | 2026-08-14 | **레코드 내용 모달 구현 완료(impl/44th)** — 세부 행 클릭 시 중앙 div 팝업(배경 클릭·닫기·ESC), frontend 전용 | impl/44th |
+| 2026-09-10 | **고도화 v0.4** — Survey(§`.docs/SecuFTPL-Survey.md` §3 P0+P1) 반영: F16(보안 벤치·평가 연동)·F17(안전·선호 데이터)·F18(디컨탬·DPI 출처)·F19(lora_variant·mlx 실학습)·F20(문서 파싱 백엔드)·F21(RAG 합성 고도화), E13~E18 신규 | 사용자 승인(implement 범위 P0+P1) |
+| 2026-09-10 | **E13~E18 구현 완료(impl/45th~50th)** — ctibench/jailbreak importer·KTO export·value_accuracy 2축·lm-eval YAML·13-gram 디컨탬·DPI manifest·lora_variant·mlx LoRA 플랜·DOC_PARSER 옵션·커버리지 합성(diversify). 보안 특화 모델 3종 core 카탈로그(pilot 스크립트 패리티 유지). backend 169·frontend 7 통과 | impl/45th~50th |
 | 2026-08-14 | **그룹 일괄 승인/반려 구현 완료(impl/43rd)** — `POST /queue/review-group`(pending 전건·lineage 연쇄), UI 그룹 행·세부 패널 일괄 버튼+확인 팝업, 개별 검수 공존. backend 150·frontend 7 통과 | impl/43rd |
 | 2026-08-14 | **검수 큐 그룹핑 구현 완료(impl/42nd)** — `GET /queue/groups`(dataset_version 요약)·`queue?dataset_version=` 필터, frontend 3단계(그룹→세부→레코드)+그룹 요약 로그. backend 147·frontend 7 통과 | impl/42nd |
 | 2026-08-14 | **F13~F15 구현 완료(impl/41st)** — `GET /datasets/export`(+manifest zip)·`/export/manifest`·`/runs`, 게이트 ③ `rejected_attribution`, 채널별 자동 스탬핑, `pipeline_runs` 추적, CLI `dataset export/--input·runs·backfill-attribution`, frontend 다운로드 섹션·검수 큐 출처 표시. **E12 완료** — backend 144·frontend 7 시험 통과 | impl/41st |
@@ -540,7 +551,13 @@ GGUF_QUANT_PRESET=q4_k_m            # Ollama/llama.cpp 변환 시 기본 양자�
 | E9. 리소스/모니터링 ✅ | 잡별 리소스 세부설정·실시간 모니터링 대시보드·백그라운드 지속성(F9) — impl/29th | E3 |
 | E10. RAG 추가학습 ✅ | RAG 코퍼스 합성 데이터 파이프라인·continual FT·모델 버전 승격(F10) — impl/30th | E1~E3 |
 | E11. 다중 런타임 export ✅ | 어댑터 merge·GGUF/MLX 변환 플랜·런타임별 배포 아티팩트·평가지표 가이드(F11·F12) — impl/31st~32nd | E3 |
-| E12. 데이터셋 export·출처·추적 | 데이터셋 다운로드+manifest(F13)·출처 필수화/마이그레이션(F14)·파이프라인 run 추적(F15) — §7.15 | E1 |
+| E12. 데이터셋 export·출처·추적 ✅ | 데이터셋 다운로드+manifest(F13)·출처 필수화/마이그레이션(F14)·파이프라인 run 추적(F15) — §7.15, impl/41st~44th | E1 |
+| E13. 보안 벤치·평가 연동 | CTIBench importer·lm-eval YAML export·값 정확도 2축 평가·보안 모델 카탈로그(F16) | E1~E3 |
+| E14. 안전·선호 데이터 | jailbreak importer(safety_refusal)·KTO export(F17) | E1, E5 |
+| E15. 정제 게이트 고도화 | 13-gram 디컨탬·DPI 출처 필드(F18) | E1, E12 |
+| E16. 학습 고도화 | lora_variant 토글·mlx-lm LoRA 실학습 경로(F19) | E3 |
+| E17. 문서 파싱 백엔드 | DOC_PARSER 옵션·docling 폴백(F20) | E1 |
+| E18. RAG 합성 고도화 | 지식 커버리지 질문 다양화(F21) | E10 |
 
 권장 순서: E1·E2 병행 → E3 → E4·E5 병행 → E6 → (E7·E9는 각 Epic과 병행) → E10 → E11.
 근거 문서 90일 로드맵과 정합.

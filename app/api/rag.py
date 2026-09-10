@@ -36,22 +36,37 @@ class SynthesizeRequest(BaseModel):
     task_type: str = "alert_triage"
     dataset_version: str = "v0.1.0"
     chunk_size: int = Field(default=800, ge=200, le=4000)
+    diversify: bool = False  # F21 — 지식 커버리지 기반 질문 다양화(유형 회전+키워드 명시)
 
 
 @router.post("/synthesize")
 def synthesize(req: SynthesizeRequest, db: DbSession) -> dict:
     """RAG 코퍼스(텍스트) → 합성 QA 레코드 생성 → 검수 큐 편입. 승인은 기존
-    `/api/v1/records/{record_id}/review` 로 별도 수행(게이트 무우회 원칙 유지)."""
-    from app.services.rag_synth import chunk_text, synthesize_records
+    `/api/v1/records/{record_id}/review` 로 별도 수행(게이트 무우회 원칙 유지).
+    diversify=true 면 커버리지 합성(F21) — 응답에 coverage 리포트 포함."""
+    from app.services.rag_synth import (
+        chunk_text,
+        coverage_synthesize,
+        synthesize_records,
+    )
 
     records = []
+    coverages = []
     for doc in req.documents:
         chunks = chunk_text(doc.text, req.chunk_size)
-        records.extend(synthesize_records(chunks, req.task_type, req.dataset_version, doc.title))
+        if req.diversify:
+            recs, coverage = coverage_synthesize(chunks, req.task_type, req.dataset_version, doc.title)
+            coverages.append({"document": doc.title, **coverage})
+        else:
+            recs = synthesize_records(chunks, req.task_type, req.dataset_version, doc.title)
+        records.extend(recs)
     if not records:
         raise HTTPException(status_code=422, detail="no synthesizable text in documents")
     result = ingest_records(IngestRequest(records=records), db, channel="rag_synthesis")
-    return {"documents": len(req.documents), "chunks": len(records), "ingest": result}
+    out = {"documents": len(req.documents), "chunks": len(records), "ingest": result}
+    if req.diversify:
+        out["coverage"] = coverages
+    return out
 
 
 @router.post("/upload")

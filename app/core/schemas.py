@@ -54,6 +54,10 @@ class RecordMetadata(BaseModel):
     trust_tier: str | None = None
     reviewer: str | None = None
     lineage_of: str | None = None  # 증강본의 원본 record_id (PRD §7.4 연쇄 폐기용)
+    # DPI(Data Provenance Initiative) 정렬 선택 필드 (PRD F18, Survey §2.2)
+    creator: str | None = None            # 원 데이터 작성 주체(조직/개인)
+    license_url: str | None = None        # 라이선스 원문 URI
+    provenance_notes: str | None = None   # 계보·수집 경위 비고
     satisfaction: Satisfaction | None = None
 
 

@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 
 from app.services.formats import EXPORTERS, convert
 
-EXPORT_FORMATS = ("canonical", "dpo-pairs", *sorted(EXPORTERS))
+EXPORT_FORMATS = ("canonical", "dpo-pairs", "kto", *sorted(EXPORTERS))
 
 
 def filter_by_version(payloads: list[dict], dataset_version: str | None) -> list[dict]:
@@ -43,6 +43,10 @@ def build_manifest(records: list[dict], target_format: str, dataset_version: str
         entry = sources.setdefault(uri, {"count": 0, "license": meta.get("license"),
                                          "source_hash_sha256": meta.get("source_hash_sha256")})
         entry["count"] += 1
+        # DPI 정렬 선택 필드(F18) — 값이 있을 때만 manifest 에 명기
+        for dpi_key in ("creator", "license_url", "provenance_notes"):
+            if meta.get(dpi_key) and dpi_key not in entry:
+                entry[dpi_key] = meta[dpi_key]
     return {
         "dataset_version": dataset_version or "(all)",
         "review_state": review_state,
@@ -53,6 +57,28 @@ def build_manifest(records: list[dict], target_format: str, dataset_version: str
         "file_sha256": hashlib.sha256(jsonl_bytes).hexdigest(),
         "generated_at": datetime.now(UTC).isoformat(),
     }
+
+
+def lmeval_task_yaml(dataset_version: str | None, jsonl_filename: str) -> str:
+    """lm-evaluation-harness 커스텀 태스크 YAML 생성 (PRD F16, Survey §2.5).
+    export 한 eval-set JSONL(prompt/expected)을 표준 하네스 태스크로 등록하는 설정 — 생성만, 실행 없음."""
+    task = f"secuftpl_{(dataset_version or 'all').replace('.', '_').replace('-', '_')}"
+    return "\n".join([
+        f"# lm-evaluation-harness custom task — SecuFTPL dataset {dataset_version or '(all)'}",
+        "# 사용: lm_eval --tasks <this task> --include_path <this dir> (harness ≥0.4)",
+        f"task: {task}",
+        "dataset_path: json",
+        "dataset_kwargs:",
+        f"  data_files: {jsonl_filename}",
+        "test_split: train",
+        "output_type: generate_until",
+        "doc_to_text: \"{{ prompt | map(attribute='content') | join('\\n') }}\"",
+        "doc_to_target: \"{{ expected }}\"",
+        "metric_list:",
+        "  - metric: exact_match",
+        "    aggregation: mean",
+        "    higher_is_better: true",
+    ]) + "\n"
 
 
 def build_zip(jsonl_bytes: bytes, manifest: dict, target_format: str) -> bytes:

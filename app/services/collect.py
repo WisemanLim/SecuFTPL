@@ -80,16 +80,48 @@ def _strip_html(text: str) -> str:
     return "\n".join(p.parts)
 
 
+def _docling_available() -> bool:
+    try:
+        import docling  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def _extract_pdf(data: bytes, filename: str) -> str:
+    """PDF 파싱 백엔드 선택 (PRD F20) — DOC_PARSER: auto(=docling 있으면 사용)|pypdf|docling.
+    docling 은 표·레이아웃 보존(마크다운) — CTI/취약점 보고서의 IOC·CVSS 표 손실 방지."""
+    from app.core.config import settings
+
+    backend = settings.doc_parser
+    if backend not in ("auto", "pypdf", "docling"):
+        raise ValueError(f"invalid DOC_PARSER: {backend} (지원: auto|pypdf|docling)")
+    if backend == "docling" and not _docling_available():
+        raise ValueError("DOC_PARSER=docling 이나 docling 미설치 — 설치 후 재시도 또는 auto/pypdf 사용")
+    if backend in ("auto", "docling") and _docling_available():
+        import tempfile
+
+        from docling.document_converter import DocumentConverter
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp:
+            tmp.write(data)
+            tmp.flush()
+            result = DocumentConverter().convert(tmp.name)
+            return result.document.export_to_markdown()
+    import io
+
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(data))
+    return "\n".join((page.extract_text() or "") for page in reader.pages)
+
+
 def extract_document_text(data: bytes, filename: str) -> str:
     """문서 파일 → 본문 텍스트 (PDF/DOCX/TXT/MD/HTML — wise-FP _EXT_MAP 상당)."""
     suffix = Path(filename).suffix.lower()
     if suffix == ".pdf":
-        import io
-
-        from pypdf import PdfReader
-
-        reader = PdfReader(io.BytesIO(data))
-        return "\n".join((page.extract_text() or "") for page in reader.pages)
+        return _extract_pdf(data, filename)
     if suffix == ".docx":
         import io
 

@@ -77,8 +77,14 @@ def create_job(db: Session, model_id: str, dataset_version: str,
     return job
 
 
-def train_plan(job: TuningJobRow) -> str:
-    """worker(GPU) 에서 실행할 QLoRA SFT 플랜(YAML) — 생성만, 실행 없음."""
+LORA_VARIANTS = ("lora", "rslora", "dora")
+
+
+def train_plan(job: TuningJobRow, lora_variant: str = "lora") -> str:
+    """worker(GPU) 에서 실행할 QLoRA SFT 플랜(YAML) — 생성만, 실행 없음.
+    lora_variant(PRD F19, Survey §2.1): rslora=α/√r 스케일링, dora=크기·방향 분해 (HF PEFT 플래그)."""
+    if lora_variant not in LORA_VARIANTS:
+        raise ValueError(f"invalid lora_variant: {lora_variant} (지원: {LORA_VARIANTS})")
     lines = [
         f"# secuftpl train plan — {job.job_id}",
         "# worker 실행: uv run python -m worker.train --config <this file>",
@@ -91,6 +97,11 @@ def train_plan(job: TuningJobRow) -> str:
     ]
     for k, v in QLORA_DEFAULTS.items():
         lines.append(f"{k}: {v}")
+    lines.append(f"lora_variant: {lora_variant}")
+    if lora_variant == "rslora":
+        lines.append("use_rslora: true              # 고랭크 안정화 (arXiv:2312.03732)")
+    elif lora_variant == "dora":
+        lines.append("use_dora: true                # 크기·방향 분해 (arXiv:2402.09353)")
     lines += [
         "eval_after_train: true          # 평가 게이트 — 통과 시에만 배포 (PRD §7.5)",
         "report_to: POST /api/v1/tuning/jobs/{job_id}/complete",

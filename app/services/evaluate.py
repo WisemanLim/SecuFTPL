@@ -17,7 +17,7 @@ def set_f1(pred: list, gold: list) -> tuple[float, float, float]:
 
 def evaluate_predictions(rows: list[dict]) -> dict:
     """예측 배치 → 리더보드 지표. prediction 이 문자열이면 JSON 파싱(실패=json_valid 0)."""
-    json_valid, severity_ok, exact, scores = [], [], [], []
+    json_valid, severity_ok, exact, scores, value_acc = [], [], [], [], []
     for item in rows:
         expected = item.get("expected", {})
         prediction = item.get("prediction", {})
@@ -33,6 +33,7 @@ def evaluate_predictions(rows: list[dict]) -> dict:
         scores.append(set_f1(prediction.get("attack_ids", []), expected.get("attack_ids", [])))
         severity_ok.append(int(prediction.get("severity") == expected.get("severity")))
         exact.append(int(prediction == expected))
+        value_acc.append(value_accuracy(prediction, expected))
     n = len(rows) or 1
     return {
         "cases": len(rows),
@@ -42,4 +43,20 @@ def evaluate_predictions(rows: list[dict]) -> dict:
         "attack_precision": sum(s[0] for s in scores) / n,
         "attack_recall": sum(s[1] for s in scores) / n,
         "attack_f1": sum(s[2] for s in scores) / n,
+        "value_accuracy": sum(value_acc) / n,
     }
+
+
+def value_accuracy(prediction: dict, expected: dict) -> float:
+    """구조화 출력 2축 평가의 값 축 (PRD F16, Survey §2.5) — 스키마 유효성(json_valid)과 별개로
+    expected 의 각 필드 값이 실제로 맞았는지 비율. 리스트는 순서 무시 집합 비교."""
+    if not expected:
+        return 1.0 if not prediction else 0.0
+    ok = 0
+    for key, want in expected.items():
+        got = prediction.get(key)
+        if isinstance(want, list) and isinstance(got, list):
+            ok += int(sorted(map(str, got)) == sorted(map(str, want)))
+        else:
+            ok += int(got == want)
+    return ok / len(expected)

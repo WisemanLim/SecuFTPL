@@ -81,7 +81,8 @@ Docker Compose v2 · Helm(K8s) · GitHub Actions (uv sync→ruff→pytest)
 Operational options (PRD §7.9): `FT_TRIGGER_MODE=schedule` · `HF_EVENT_MODE=polling` (weekly) ·
 `SATISFACTION_SCALE=binary` · `SERVING_STACK=ollama` · `DATASET_MIN_RECORDS=500` (tuning start gate) ·
 `JOB_MAX_GPU=1`/`JOB_MAX_VRAM_GB=24` (default job resource limits, F9) ·
-`TOTAL_GPU_CAPACITY=2` (system-wide concurrent training cap, queues jobs beyond it). Full keys: [.env.example](.env.example).
+`TOTAL_GPU_CAPACITY=2` (system-wide concurrent training cap, queues jobs beyond it) ·
+`DOC_PARSER=auto` (PDF parser backend: auto|pypdf|docling, F20). Full keys: [.env.example](.env.example).
 **Never commit real secrets** — `.gitignore` blocks `.env.*` (`!.env.example`).
 
 ## Run
@@ -124,7 +125,9 @@ on a conflict, changing `API_PORT` in `.env.local` propagates to compose, Procfi
 | POST | `/api/v1/datasets/validate` | batch-validate canonical records (gate report) |
 | POST | `/api/v1/datasets/convert` | format conversion (alpaca/sharegpt/openai-chat ↔ canonical; export: dpo-pairs·eval-set) |
 | GET | `/api/v1/datasets/export` | **dataset download** (F13) — filters `format`/`review_state` (default approved)/`dataset_version`, streams JSONL. `with_manifest=true` returns a zip (dataset + manifest with source aggregation·sha256) |
-| GET | `/api/v1/datasets/export/manifest` | manifest preview — counts, distributions, **per-source aggregation (source_uri·license)**, file sha256 (for expert verification) |
+| GET | `/api/v1/datasets/export/manifest` | manifest preview — counts, distributions, **per-source aggregation (source_uri·license + DPI: creator/license_url/provenance_notes)**, file sha256 (for expert verification) |
+| GET | `/api/v1/datasets/export/lmeval-task` | **lm-evaluation-harness task YAML** (F16) — pairs with the eval-set export for standard-harness registration |
+| GET | `/api/v1/datasets/decontam?train_version=&eval_version=&k=13` | **13-gram decontamination** (F18) — train candidates vs eval-set contamination check (report only) |
 | GET | `/api/v1/datasets/runs` · `/runs/{run_id}` | **collection/refinement run history/detail** (F15) — per-stage pass/block counts, rejection reason samples, source aggregation, channel filter |
 | POST | `/api/v1/records/ingest` | ingest: **gate ③ attribution check (F14 — records missing `source_uri`·`source_hash_sha256` get `rejected_attribution`)** → pseudonymize → dedup → queue as pending; response includes `run_id` |
 | POST | `/api/v1/records/upload` | **multi-file upload** — JSONL/JSON (F6 convert) + **documents PDF/DOCX/TXT/MD/HTML** (text extraction → needs_annotation record). UI directory picker uses this too |
@@ -155,7 +158,8 @@ on a conflict, changing `API_PORT` in `.env.local` propagates to compose, Procfi
 | POST | `/api/v1/tuning/jobs/{id}/export/mlx` | **real MLX conversion** (F11) — actually runs the conversion when `mlx-lm` is installed (`uv sync --extra mlx`); 501 if not installed, 422 if the full model isn't real HF weights |
 | POST | `/api/v1/tuning/jobs/{id}/retry` | re-run a queued/failed job (background re-dispatch) |
 | DELETE | `/api/v1/tuning/jobs/{id}` | delete job (cascades event log; running blocked) |
-| GET | `/api/v1/tuning/jobs/{id}/plan` | generate QLoRA training plan (YAML) |
+| GET | `/api/v1/tuning/jobs/{id}/plan?lora_variant=` | generate QLoRA training plan (YAML) — `lora_variant=lora|rslora|dora` (F19) |
+| GET | `/api/v1/tuning/jobs/{id}/train-plan/mlx` | **mlx-lm LoRA real-training command plan** (F19, Apple Silicon) — plan only; execution is worker/manual |
 | POST | `/api/v1/tuning/jobs/{id}/complete` | external worker callback (metrics → leaderboard) |
 | GET | `/api/v1/tuning/leaderboard/detail/{model_id}` | **model detail** — evaluation history (eval_id) + tuning jobs |
 | DELETE | `/api/v1/tuning/leaderboard/{eval_id}` | delete a single evaluation result (job·model kept) |
@@ -167,7 +171,7 @@ on a conflict, changing `API_PORT` in `.env.local` propagates to compose, Procfi
 | GET | `/api/v1/batch/should-run` · POST `/run` | batch trigger check·run (E6, called by ops cron) |
 | POST | `/api/v1/batch/gate` · GET `/runs` | deployment gate (floors + regression check)·history |
 | GET | `/api/v1/batch/cron-plan` | **ops cron wiring** — generates crontab lines for nightly batch·HF polling (never installed/executed; add via `crontab -e`) |
-| POST | `/api/v1/rag/synthesize` · `/upload` | **RAG corpus → synthesized QA records** (F10) — chunk text/documents (PDF·DOCX·TXT·MD·HTML) → synthesize cause/resolution → queue for review |
+| POST | `/api/v1/rag/synthesize` · `/upload` | **RAG corpus → synthesized QA records** (F10) — chunk text/documents (PDF·DOCX·TXT·MD·HTML) → synthesize cause/resolution → queue for review. `diversify=true` (F21): question-style rotation + keyword-focused coverage synthesis, coverage report in response |
 | POST | `/api/v1/rag/upgrade` | **model upgrade** (F10) — submit a continual fine-tuning job on the approved (RAG-augmented) dataset; optional `continual_from_job_id` sets the base adapter |
 
 ```bash
@@ -240,7 +244,7 @@ as JSON/tar.gz. Requires: `curl`·`jq`·`uv`·`python3` (synthetic record genera
 ## Test
 
 ```bash
-make test           # uv run pytest (single test/ tree, backend 150 cases)
+make test           # uv run pytest (single test/ tree, backend 169 cases)
 make front-test      # frontend Vitest unit tests (7 cases)
 make front-test-e2e  # frontend Playwright e2e (2 cases, auto-starts dev server)
 ```
@@ -266,8 +270,10 @@ real MLX export) · `39th/` (augmentation — paraphrase) ·
 `41st/` (F13 dataset download+manifest · F14 mandatory attribution · F15 pipeline run tracking) ·
 `42nd/` (review queue grouping — group→detail→record 3-step navigation·group summary) ·
 `43rd/` (group bulk approve/reject — coexists with individual review) ·
-`44th/` (record detail as div popup modal) —
-all PASS (150 backend cases + 9 frontend cases + E2E).
+`44th/` (record detail as div popup modal) ·
+`45th~50th/` (Survey P0+P1 v0.4 — E13 bench/eval wiring / E14 jailbreak·KTO / E15 decontam·DPI /
+E16 lora_variant·mlx plan / E17 DOC_PARSER / E18 coverage synthesis) —
+all PASS (169 backend cases + 9 frontend cases + E2E).
 
 ## Troubleshooting
 

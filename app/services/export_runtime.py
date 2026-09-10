@@ -71,6 +71,33 @@ def convert_to_mlx(full_model_dir: Path, mlx_out_dir: Path, quantize: bool = Tru
     return {"mlx_path": str(mlx_out_dir), "quantize": quantize}
 
 
+def mlx_lora_train_plan(job_id: str, model_id: str, dataset_version: str) -> dict:
+    """mlx-lm LoRA 실학습 명령 플랜 (PRD F19, Apple Silicon) — 생성만, 실행 없음.
+    데이터: `secuftpl dataset export --format canonical` 산출 JSONL 을 mlx chat 포맷 디렉터리로 변환해 사용."""
+    safe = job_id.replace("/", "_")
+    data_dir = f"./exports/{safe}-mlx-data"
+    command = " ".join([
+        "python -m mlx_lm.lora",
+        f"--model {model_id}",
+        "--train",
+        f"--data {data_dir}",
+        f"--adapter-path ./adapters/{safe}-mlx",
+        "--batch-size 1 --num-layers 8 --iters 600",
+    ])
+    return {
+        "job_id": job_id,
+        "backend": "mlx-lm",
+        "available": _mlx_available(),
+        "data_dir": data_dir,
+        "command": command,
+        "notes": [
+            "데이터 준비: dataset export(canonical JSONL) → {train,valid}.jsonl 로 분할해 data_dir 에 배치",
+            "mlx-lm 미설치 시 'uv sync --extra mlx' (Apple Silicon 전용)",
+            "실행은 worker/수동 — 이 엔드포인트는 명령 생성만 (export-plan 과 동일 원칙)",
+        ],
+    }
+
+
 def conversion_plan(job_id: str, full_model_dir: Path, target: str) -> str:
     """GGUF(Ollama/llama.cpp)·MLX 변환 명령 플랜 — 생성만, 실행 없음(PRD §7.14)."""
     safe = job_id.replace("/", "__")

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     job_max_gpu: int = 1  # 잡당 GPU 개수 기본 상한 (F9, PRD §7.9·§7.12)
     job_max_vram_gb: int = 24  # 잡당 VRAM 기본 상한(GB) (F9)
     total_gpu_capacity: int = 2  # 시스템 전체 동시 학습 GPU 상한 — 초과 시 실제 큐잉(F9, §7.12)
+    doc_parser: str = "auto"  # auto | pypdf | docling — PDF 파싱 백엔드 (F20, Survey §3 P1)
 
 
 settings = Settings()

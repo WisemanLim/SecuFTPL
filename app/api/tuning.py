@@ -298,9 +298,23 @@ def delete_job(job_id: str, db: DbSession) -> dict:
 
 
 @router.get("/jobs/{job_id}/plan")
-def get_plan(job_id: str, db: DbSession) -> dict:
+def get_plan(job_id: str, db: DbSession, lora_variant: str = "lora") -> dict:
     job = _job(db, job_id)
-    return {"job_id": job_id, "plan": train_plan(job)}
+    try:
+        plan = train_plan(job, lora_variant)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"job_id": job_id, "lora_variant": lora_variant, "plan": plan}
+
+
+@router.get("/jobs/{job_id}/train-plan/mlx")
+def mlx_train_plan_endpoint(job_id: str, db: DbSession) -> dict:
+    """mlx-lm LoRA 실학습 명령 플랜 (F19, Apple Silicon) — 생성만. 실행은 worker/수동.
+    실행 전제: 베이스모델 실 HF 가중치 로컬 존재(다운로드), mlx-lm 설치(uv sync --extra mlx)."""
+    from app.services.export_runtime import mlx_lora_train_plan
+
+    job = _job(db, job_id)
+    return mlx_lora_train_plan(job.job_id, job.model_id, job.dataset_version)
 
 
 @router.post("/jobs/{job_id}/complete")
